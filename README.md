@@ -21,6 +21,19 @@
 
 This Nginx module is currently considered experimental. Issues and PRs are welcome if you encounter any problems.
 
+> The condition variable definition operator has been removed. Please migrate to ngx_condition_module.
+> ```nginx
+> # before
+> var $bool_var str_eq $uri /abc;   # deprecated
+> # after:
+> condition uri_is_abc str_eq $uri /abc;
+> when uri_is_abc {
+>     var $new_var set 1;
+> }
+> var $new_var set 0;
+> ```
+
+
 # Synopsis
 
 ```nginx
@@ -100,52 +113,13 @@ The `-i` parameter is used to ignore case (Available only in some functions).
 
 Except for the function name, the `-i` parameter, and the regular expression, all parameters are allowed to contain variables.
 
-When the value of a parameter is invalid, the variable's value is empty. In Boolean functions, invalid parameters will also result in an empty value instead of 0.
+When the value of a parameter is invalid, the variable's value is empty.
 
 `var` cannot be used to define the same variable simultaneously with the `map` or `geo` directives. However, the `set` directive can be used to override variables defined by `var`.
 
 The following functions are available:
 
 ```nginx
-#### Conditional Judgement ####
-# Returns 1 if the input parameter is empty or 0, otherwise returns 0
-var $bool_var not str;
-
-# Returns 1 if all input parameters are non-empty and not 0, otherwise returns 0
-var $bool_var and str1 str2...; 
-
-# Returns 1 if any input parameter is non-empty and not 0, otherwise returns 0
-var $bool_var or str1 str2...; 
-
-
-#### String Judgement ####
-# Checks if the string is empty, returns 1 or 0
-var $bool_var is_empty str;
-
-# Checks if the string is non-empty, returns 1 or 0
-var $bool_var is_not_empty str;
-
-# Checks if the string is a number, returns 1 or 0. Only decimal numbers are allowed. negative numbers and fractions are supported.
-var $bool_var is_num str;
-
-# Checks if the strings are equal, returns 1 or 0
-var $bool_var str_eq [-i] str1 str2;
-
-# Checks if the strings are not equal, returns 1 or 0
-var $bool_var str_ne [-i] str1 str2;
-
-# Checks if the string has the specified prefix, returns 1 or 0
-var $bool_var starts_with [-i] str prefix;
-
-# Checks if the string has the specified suffix, returns 1 or 0
-var $bool_var ends_with [-i] str suffix;
-
-# Checks if the substring is present, returns 1 or 0
-var $bool_var contains [-i] str sub_str;
-
-# Checks if the str1 is one of str2 .. strn, returns 1 or 0
-var $bool_var str_in [-i] str1 str2 str3 .. strn;
-
 #### General String Operations ####
 # Set the value directly of the variable
 var $new_var set src_str;
@@ -234,11 +208,6 @@ var $new_var extract_json json subkey1 [subkey2] [subkey3] ...;
 # Result: {"name":"Bob","age":30}
 
 
-#### Regex Judgement ####
-# Check if regex matches, returns 1 or 0
-var $bool_var regex_match [-i] src_str match_regex;
-
-
 #### Regex Operations ####
 # Capture regex
 var $new_var regex_capture [-i] src_str regex assign_value;
@@ -246,31 +215,6 @@ var $new_var regex_capture [-i] src_str regex assign_value;
 # Substitute regex
 var $new_var regex_sub [-i] src_str regex replacement;
 
-
-#### Mathematical Judgement ####
-# Check if numbers are equal, returns 1 or 0
-var $bool_var eq num1 num2;
-
-# Check if numbers are not equal, returns 1 or 0
-var $bool_var ne num1 num2;
-
-# Check if less than, returns 1 or 0
-var $bool_var lt num1 num2;
-
-# Check if less than or equal, returns 1 or 0
-var $bool_var le num1 num2;
-
-# Check if greater than, returns 1 or 0
-var $bool_var gt num1 num2;
-
-# Check if greater than or equal, returns 1 or 0
-var $bool_var ge num1 num2;
-
-# Check if is within the start_num end_num range, if end_num is not specified, the range is [0, start_num], return 1 or 0
-var $bool_var range num start_num [end_num];
-
-# Check if number is one of num2 .. numn, returns 1 or 0
-var $bool_var in num1 num2 .. numn;
 
 ### Mathematical Operations ####
 # Absolute value (returns original format without negative sign)
@@ -418,13 +362,6 @@ var $new_var hmac_sha384 src_str secret;
 # HMAC_SHA512 encryption
 var $new_var hmac_sha512 src_str secret;
 
-#### Time Range Judgement ####
-# Determine if the current time meets the given time range, requires at least one parameter.
-# Returns 1 if all conditions are met, otherwise returns 0.
-# The day of the week is represented by 0-6, where sunday is 0, and timezone format is gmt+0800
-var $bool_var time_range [year=year_range] [month=month_range] [day=day_range] [wday=wday_range(0-6)] [hour=hour_range] [min=min_range] [sec=sec_range] [gmt | gmt+0000];
-
-
 #### Time Format ####
 # Convert timestamp to HTTP time (current time if timestamp is omitted)
 var $new_var gmt_time [src_ts] http_time;
@@ -449,9 +386,6 @@ var $new_var unix_time src_time date_format [timezone];
 
 
 #### IP ####
-# Determine whether the ip address is within the ip, cidr or ipv4 range, if yes, return 1, otherwise return 0
-var $bool_var ip_range ip_str [ipv4 | ipv6 | cidr | ipv4_range ] ...;
-
 # Calculate the network address based on IP address and network bits
 # For IPv4: network_bits range is 1-32
 # For IPv6: network_bits range is 1-128
