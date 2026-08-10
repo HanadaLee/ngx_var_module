@@ -24,8 +24,8 @@
 #endif
 
 
-#define ngx_http_var_isspace(c)                                               \
-    ((c) == ' ' || (c) == '\t' || (c) == CR || (c) == LF)                     \
+#define ngx_http_var_isspace(c)                                              \
+    ((c) == ' ' || (c) == '\t' || (c) == CR || (c) == LF)
 
 
 typedef enum {
@@ -720,7 +720,8 @@ ngx_http_var_create_variable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     v = ngx_http_add_variable(cf, &value[1],
-                             NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE);
+                              NGX_HTTP_VAR_CHANGEABLE
+                              |NGX_HTTP_VAR_NOCACHEABLE);
     if (v == NULL) {
         return NGX_CONF_ERROR;
     }
@@ -789,7 +790,7 @@ ngx_http_var_create_variable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         args--;
 
         rule->args = ngx_array_create(cf->pool, ngx_max(args, 1),
-            sizeof(ngx_http_complex_value_t));
+                                      sizeof(ngx_http_complex_value_t));
         if (rule->args == NULL) {
             return NGX_CONF_ERROR;
         }
@@ -864,7 +865,7 @@ ngx_http_var_create_variable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 #endif
 
         rule->args = ngx_array_create(cf->pool, ngx_max(args, 1),
-                                     sizeof(ngx_http_complex_value_t));
+                                      sizeof(ngx_http_complex_value_t));
         if (rule->args == NULL) {
             return NGX_CONF_ERROR;
         }
@@ -1041,7 +1042,7 @@ ngx_http_var_cache_random(ngx_http_request_t *r,
 
 
 static ngx_int_t
-ngx_http_var_find_rule(ngx_http_request_t *r, 
+ngx_http_var_find_rule(ngx_http_request_t *r,
     ngx_http_var_variable_t *var, ngx_http_var_rule_t **rule)
 {
     ngx_http_var_rule_t        *rules;
@@ -1064,7 +1065,7 @@ ngx_http_var_find_rule(ngx_http_request_t *r,
         if (rules[i].filter) {
 
             if (ngx_http_complex_value(r, rules[i].filter, &val)
-                    != NGX_OK)
+                != NGX_OK)
             {
                 return NGX_ERROR;
             }
@@ -1730,6 +1731,7 @@ ngx_http_var_utils_filter_params(ngx_http_request_t *r,
         key.data = p;
         if (eq == NULL) {
             key.len = next_sep - p;
+
         } else {
             key.len = eq - p;
         }
@@ -1775,6 +1777,7 @@ ngx_http_var_utils_filter_params(ngx_http_request_t *r,
             if (!first) {
                 len += 1; /* separator */
             }
+
             len += next_sep - p;
             first = 0;
         }
@@ -1782,6 +1785,7 @@ ngx_http_var_utils_filter_params(ngx_http_request_t *r,
         if (next_sep == last) {
             break;
         }
+
         p = next_sep + 1;
     }
 
@@ -1819,6 +1823,7 @@ ngx_http_var_utils_filter_params(ngx_http_request_t *r,
         key.data = p;
         if (eq == NULL) {
             key.len = next_sep - p;
+
         } else {
             key.len = eq - p;
         }
@@ -1863,6 +1868,7 @@ ngx_http_var_utils_filter_params(ngx_http_request_t *r,
             if (!first) {
                 *dst++ = key_elts[1].data[0];
             }
+
             ngx_memcpy(dst, p, next_sep - p);
             dst += next_sep - p;
             first = 0;
@@ -1871,6 +1877,7 @@ ngx_http_var_utils_filter_params(ngx_http_request_t *r,
         if (next_sep == last) {
             break;
         }
+
         p = next_sep + 1;
     }
 
@@ -2716,7 +2723,8 @@ ngx_http_var_exec_extract_param(ngx_http_request_t *r,
             p = ngx_strlcasestrn(p, last - 1, name.data, name.len - 1);
 
         } else {
-            p = ngx_http_var_utils_strlstrn(p, last - 1, name.data, name.len - 1);
+            p = ngx_http_var_utils_strlstrn(p, last - 1, name.data,
+                                            name.len - 1);
         }
 
         if (p == NULL) {
@@ -4088,7 +4096,7 @@ ngx_http_var_exec_floor(ngx_http_request_t *r,
 
     if (decimal_point == (ngx_int_t) (num_len - 1)) {
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                        "var: decimal point at the end of number");
+                      "var: decimal point at the end of number");
         return NGX_ERROR;
     }
 
@@ -4396,7 +4404,7 @@ ngx_http_var_exec_rand(ngx_http_request_t *r,
 
         if (s.len == 0) {
             ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                        "var: empty argument for \"rand\"");
+                          "var: empty argument for \"rand\"");
             return NGX_ERROR;
         }
 
@@ -4404,7 +4412,7 @@ ngx_http_var_exec_rand(ngx_http_request_t *r,
 
         if (end == NGX_ERROR || start > end) {
             ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                        "var: invalid end value for \"rand\"");
+                          "var: invalid end value for \"rand\"");
             return NGX_ERROR;
         }
 
