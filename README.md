@@ -280,6 +280,12 @@ var $new_var rand [start_int] [end_int];
 # Random hex sequence in specified. number_of_bytes must be 1-32, default is 32
 var $new_var hexrand [number_of_bytes];
 
+# On nginx 1.31.3 and later, rand and hexrand use the SipHash-based generator.
+# Older nginx versions retain the legacy generator.
+# Each generated value is cached for the current request, so repeated
+# evaluations of the same rule return the same value.
+# These operators are intended for non-security identifiers, not secrets.
+
 
 #### Encoding and Decoding ####
 # Convert binary to hexadecimal

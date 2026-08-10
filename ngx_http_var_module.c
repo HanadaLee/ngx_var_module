@@ -148,7 +148,14 @@ typedef struct {
 
 
 typedef struct {
+    ngx_http_var_rule_t           *rule;
+    ngx_str_t                      value;
+} ngx_http_var_random_value_t;
+
+
+typedef struct {
     ngx_uint_t                    *locked_vars;
+    ngx_array_t                   *random_values;
 } ngx_http_var_ctx_t;
 
 
@@ -167,11 +174,15 @@ static char *ngx_http_var_merge_loc_conf(ngx_conf_t *cf, void *parent,
 static char *ngx_http_var_create_variable(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
-static ngx_http_var_ctx_t *ngx_http_var_get_lock_ctx(ngx_http_request_t *r);
+static ngx_http_var_ctx_t *ngx_http_var_get_ctx(ngx_http_request_t *r);
 static ngx_int_t ngx_http_variable_acquire_lock(ngx_http_request_t *r,
     ngx_int_t index);
 static void ngx_http_variable_release_lock(ngx_http_request_t *r,
     ngx_int_t index);
+static ngx_int_t ngx_http_var_get_cached_random(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
+static ngx_int_t ngx_http_var_cache_random(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_find_rule(ngx_http_request_t *r,
     ngx_http_var_variable_t *var, ngx_http_var_rule_t **rule);
 static ngx_int_t ngx_http_var_evaluate_rule(ngx_http_request_t *r,
@@ -889,7 +900,7 @@ ngx_http_var_create_variable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
 
 static ngx_http_var_ctx_t *
-ngx_http_var_get_lock_ctx(ngx_http_request_t *r)
+ngx_http_var_get_ctx(ngx_http_request_t *r)
 {
     ngx_http_core_main_conf_t  *cmcf;
 
@@ -928,7 +939,7 @@ ngx_http_variable_acquire_lock(ngx_http_request_t *r, ngx_int_t index)
     ngx_http_var_ctx_t       *ctx;
 
     /* get or create the context */
-    ctx = ngx_http_var_get_lock_ctx(r);
+    ctx = ngx_http_var_get_ctx(r);
     if (ctx == NULL) {
         return NGX_ERROR;
     }
@@ -961,6 +972,71 @@ ngx_http_variable_release_lock(ngx_http_request_t *r, ngx_int_t index)
 
     /* clear the lock mark */
     ctx->locked_vars[index] = 0;
+}
+
+
+static ngx_int_t
+ngx_http_var_get_cached_random(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
+{
+    ngx_uint_t                     i;
+    ngx_http_var_ctx_t            *ctx;
+    ngx_http_var_random_value_t   *values;
+
+    ctx = ngx_http_var_get_ctx(r);
+    if (ctx == NULL) {
+        return NGX_ERROR;
+    }
+
+    if (ctx->random_values == NULL) {
+        return NGX_DECLINED;
+    }
+
+    values = ctx->random_values->elts;
+
+    for (i = 0; i < ctx->random_values->nelts; i++) {
+        if (values[i].rule == rule) {
+            v->len = values[i].value.len;
+            v->data = values[i].value.data;
+
+            return NGX_OK;
+        }
+    }
+
+    return NGX_DECLINED;
+}
+
+
+static ngx_int_t
+ngx_http_var_cache_random(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
+{
+    ngx_http_var_ctx_t           *ctx;
+    ngx_http_var_random_value_t  *value;
+
+    ctx = ngx_http_var_get_ctx(r);
+    if (ctx == NULL) {
+        return NGX_ERROR;
+    }
+
+    if (ctx->random_values == NULL) {
+        ctx->random_values = ngx_array_create(r->pool, 2,
+                                      sizeof(ngx_http_var_random_value_t));
+        if (ctx->random_values == NULL) {
+            return NGX_ERROR;
+        }
+    }
+
+    value = ngx_array_push(ctx->random_values);
+    if (value == NULL) {
+        return NGX_ERROR;
+    }
+
+    value->rule = rule;
+    value->value.len = v->len;
+    value->value.data = v->data;
+
+    return NGX_OK;
 }
 
 
@@ -4227,6 +4303,36 @@ ngx_http_var_exec_ceil(ngx_http_request_t *r,
 }
 
 
+#if (nginx_version >= 1031003)
+
+static uint64_t
+ngx_http_var_random64(void)
+{
+    static uint64_t  counter, key[2];
+
+    if (counter == 0) {
+#if (NGX_OPENSSL)
+        if (RAND_bytes((u_char *) key, 16) != 1)
+#endif
+        {
+            key[0] = ((uint64_t) ngx_random() << 32)
+                     | (uint32_t) ngx_random();
+            key[1] = ((uint64_t) ngx_random() << 32)
+                     | (uint32_t) ngx_random();
+            key[0] ^= (uint64_t) ngx_pid << 16;
+            key[1] ^= (uint64_t) ngx_time();
+        }
+    }
+
+    counter++;
+
+    return ngx_siphash(key[0], key[1], (u_char *) &counter,
+                       sizeof(counter));
+}
+
+#endif
+
+
 static ngx_int_t
 ngx_http_var_exec_rand(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
@@ -4234,7 +4340,14 @@ ngx_http_var_exec_rand(ngx_http_request_t *r,
     ngx_http_complex_value_t  *args;
     ngx_str_t                  s;
     ngx_int_t                  start, end, result;
+    ngx_int_t                  rc;
+    uint64_t                   random_value;
     u_char                    *p;
+
+    rc = ngx_http_var_get_cached_random(r, v, rule);
+    if (rc != NGX_DECLINED) {
+        return rc;
+    }
 
     if (rule->args->nelts == 0) {
         p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
@@ -4242,10 +4355,16 @@ ngx_http_var_exec_rand(ngx_http_request_t *r,
             return NGX_ERROR;
         }
 
+#if (nginx_version >= 1031003)
+        random_value = ngx_http_var_random64()
+                       & (uint64_t) NGX_MAX_INT_T_VALUE;
+        v->len = ngx_sprintf(p, "%ui", (ngx_uint_t) random_value) - p;
+#else
         v->len = ngx_sprintf(p, "%ui", ngx_random()) - p;
+#endif
         v->data = p;
-        
-        return NGX_OK;
+
+        return ngx_http_var_cache_random(r, v, rule);
     }
 
     args = rule->args->elts;
@@ -4295,13 +4414,26 @@ ngx_http_var_exec_rand(ngx_http_request_t *r,
     }
 
     if (start == end) {
-        v->len = 1;
-        v->data = (u_char *) "0";
-        return NGX_OK;
+        p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
+        if (p == NULL) {
+            return NGX_ERROR;
+        }
+
+        v->len = ngx_sprintf(p, "%i", start) - p;
+        v->data = p;
+
+        return ngx_http_var_cache_random(r, v, rule);
     }
 
     /* Generate a random number between start and end (inclusive) */
-    result = start + (ngx_random() % (end - start + 1));
+#if (nginx_version >= 1031003)
+    random_value = ngx_http_var_random64();
+#else
+    random_value = ngx_random();
+#endif
+
+    result = start
+             + (ngx_int_t) (random_value % ((uint64_t) end - start + 1));
 
     /* Allocate memory for the result string */
     p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
@@ -4312,7 +4444,7 @@ ngx_http_var_exec_rand(ngx_http_request_t *r,
     v->len = ngx_sprintf(p, "%i", result) - p;
     v->data = p;
 
-    return NGX_OK;
+    return ngx_http_var_cache_random(r, v, rule);
 }
 
 
@@ -4324,10 +4456,18 @@ ngx_http_var_exec_hexrand(ngx_http_request_t *r,
     u_char                    *p;
     ngx_str_t                  s;
     ngx_int_t                  n;
+    ngx_int_t                  rc;
 
-#if (NGX_OPENSSL)
+#if (nginx_version >= 1031003)
+    uint64_t                   random_bytes[2];
+#elif (NGX_OPENSSL)
     u_char                     random_bytes[16];
 #endif
+
+    rc = ngx_http_var_get_cached_random(r, v, rule);
+    if (rc != NGX_DECLINED) {
+        return rc;
+    }
 
     if (rule->args->nelts == 0) {
         n = 32;
@@ -4361,11 +4501,20 @@ ngx_http_var_exec_hexrand(ngx_http_request_t *r,
     v->len = (size_t) n;
     v->data = p;
 
+#if (nginx_version >= 1031003)
+
+    random_bytes[0] = ngx_http_var_random64();
+    random_bytes[1] = ngx_http_var_random64();
+
+    ngx_hex_dump(p, (u_char *) random_bytes, 16);
+
+#else
+
 #if (NGX_OPENSSL)
 
     if (RAND_bytes(random_bytes, 16) == 1) {
         ngx_hex_dump(p, random_bytes, 16);
-        return NGX_OK;
+        return ngx_http_var_cache_random(r, v, rule);
     }
 
     ngx_ssl_error(NGX_LOG_ERR, r->connection->log, 0, "RAND_bytes() failed");
@@ -4376,7 +4525,9 @@ ngx_http_var_exec_hexrand(ngx_http_request_t *r,
                 (uint32_t) ngx_random(), (uint32_t) ngx_random(),
                 (uint32_t) ngx_random(), (uint32_t) ngx_random());
 
-    return NGX_OK;
+#endif
+
+    return ngx_http_var_cache_random(r, v, rule);
 }
 
 
