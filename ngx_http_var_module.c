@@ -1226,13 +1226,14 @@ ngx_http_var_compile_regex(ngx_conf_t *cf,
 
     if (rule->func->type == NGX_HTTP_VAR_FUNC_REGEX_SUB) {
         regex.len = value[1].len + 2;
-        regex.data = ngx_pnalloc(cf->pool, regex.len);
+        regex.data = ngx_pnalloc(cf->pool, regex.len + 1);
         if (regex.data == NULL) {
             return NGX_ERROR;
         }
 
         ngx_memcpy(regex.data, value[1].data, value[1].len);
         ngx_memcpy(regex.data + value[1].len, "()", 2);
+        regex.data[regex.len] = '\0';
 
     } else {
         regex = value[1];
@@ -2313,6 +2314,12 @@ ngx_http_var_replace_handler(ngx_http_request_t *r,
                       "var %V: search string is empty",
                       &rule->func->name);
         return NGX_ERROR;
+    }
+
+    if (search.len > val.len) {
+        v->len = val.len;
+        v->data = val.data;
+        return NGX_OK;
     }
 
     /* count occurrences */
@@ -3986,7 +3993,6 @@ ngx_http_var_hex_decode_handler(ngx_http_request_t *r,
     u_char                    *p;
     ngx_int_t                  byte;
     size_t                     i;
-    size_t                     len;
 
     args = rule->args->elts;
 
@@ -4002,14 +4008,14 @@ ngx_http_var_hex_decode_handler(ngx_http_request_t *r,
     }
 
     p = val.data;
-    len = val.len >> 1;
+    v->len = val.len >> 1;
 
-    v->data = ngx_palloc(r->pool, len);
+    v->data = ngx_palloc(r->pool, v->len);
     if (v->data == NULL) {
         return NGX_ERROR;
     }
 
-    for (i = 0; i < len; i++) {
+    for (i = 0; i < v->len; i++) {
         byte = ngx_hextoi(p, 2);
         if (byte == NGX_ERROR || byte > 255) {
             ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
@@ -4993,10 +4999,14 @@ ngx_http_var_cidr_handler(ngx_http_request_t *r,
 
         /* check if it's IPv4-mapped IPv6 address */
         if (IN6_IS_ADDR_V4MAPPED(&ipv6_addr)) {
-            ipv4_addr = ipv6_addr.s6_addr[12] << 24;
-            ipv4_addr += ipv6_addr.s6_addr[13] << 16;
-            ipv4_addr += ipv6_addr.s6_addr[14] << 8;
-            ipv4_addr += ipv6_addr.s6_addr[15];
+            p = ipv6_addr.s6_addr;
+
+            ipv4_addr = (in_addr_t) p[12] << 24;
+            ipv4_addr += p[13] << 16;
+            ipv4_addr += p[14] << 8;
+            ipv4_addr += p[15];
+
+            ipv4_addr = htonl(ipv4_addr);
 
         } else {
             is_ipv6 = 1;
