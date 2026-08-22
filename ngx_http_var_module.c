@@ -179,8 +179,8 @@ struct ngx_http_var_func_s {
 };
 
 
-static void *ngx_http_var_create_loc_conf(ngx_conf_t *cf);
-static char *ngx_http_var_merge_loc_conf(ngx_conf_t *cf, void *parent,
+static void *ngx_http_var_create_conf(ngx_conf_t *cf);
+static char *ngx_http_var_merge_conf(ngx_conf_t *cf, void *parent,
     void *child);
 
 static char *ngx_http_var(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -713,8 +713,8 @@ static ngx_http_module_t  ngx_http_var_module_ctx = {
     NULL,                                  /* create server configuration */
     NULL,                                  /* merge server configuration */
 
-    ngx_http_var_create_loc_conf,          /* create location configuration */
-    ngx_http_var_merge_loc_conf            /* merge location configuration */
+    ngx_http_var_create_conf,              /* create location configuration */
+    ngx_http_var_merge_conf                /* merge location configuration */
 };
 
 
@@ -735,7 +735,7 @@ ngx_module_t  ngx_http_var_module = {
 
 
 static void *
-ngx_http_var_create_loc_conf(ngx_conf_t *cf)
+ngx_http_var_create_conf(ngx_conf_t *cf)
 {
     ngx_http_var_conf_t  *conf;
 
@@ -751,7 +751,7 @@ ngx_http_var_create_loc_conf(ngx_conf_t *cf)
 
 
 static char *
-ngx_http_var_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
+ngx_http_var_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 {
     ngx_http_var_conf_t      *prev = parent;
     ngx_http_var_conf_t      *conf = child;

@@ -179,8 +179,8 @@ struct ngx_stream_var_func_s {
 };
 
 
-static void *ngx_stream_var_create_srv_conf(ngx_conf_t *cf);
-static char *ngx_stream_var_merge_srv_conf(ngx_conf_t *cf, void *parent,
+static void *ngx_stream_var_create_conf(ngx_conf_t *cf);
+static char *ngx_stream_var_merge_conf(ngx_conf_t *cf, void *parent,
     void *child);
 
 static char *ngx_stream_var(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -710,8 +710,8 @@ static ngx_stream_module_t  ngx_stream_var_module_ctx = {
     NULL,                                  /* create main configuration */
     NULL,                                  /* init main configuration */
 
-    ngx_stream_var_create_srv_conf,        /* create server configuration */
-    ngx_stream_var_merge_srv_conf          /* merge server configuration */
+    ngx_stream_var_create_conf,            /* create server configuration */
+    ngx_stream_var_merge_conf              /* merge server configuration */
 };
 
 
@@ -732,7 +732,7 @@ ngx_module_t  ngx_stream_var_module = {
 
 
 static void *
-ngx_stream_var_create_srv_conf(ngx_conf_t *cf)
+ngx_stream_var_create_conf(ngx_conf_t *cf)
 {
     ngx_stream_var_conf_t  *conf;
 
@@ -748,7 +748,7 @@ ngx_stream_var_create_srv_conf(ngx_conf_t *cf)
 
 
 static char *
-ngx_stream_var_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
+ngx_stream_var_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 {
     ngx_stream_var_conf_t      *prev = parent;
     ngx_stream_var_conf_t      *conf = child;
