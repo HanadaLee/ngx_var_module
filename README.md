@@ -1,6 +1,7 @@
 # Name
 
-`ngx_http_var_module` is a nginx module that dynamically assigns new variables through predefined functions.
+This repository provides `ngx_http_var_module` and `ngx_stream_var_module`.
+Both modules dynamically assign new variables through predefined functions.
 
 # Table of Content
 
@@ -36,6 +37,8 @@ This Nginx module is currently considered experimental. Issues and PRs are welco
 
 # Synopsis
 
+HTTP:
+
 ```nginx
 server {
     listen 127.0.0.1:8080;
@@ -43,6 +46,18 @@ server {
 
     location / {
         var $new_var set $scheme://$host$request_uri;
+    }
+}
+```
+
+Stream:
+
+```nginx
+stream {
+    server {
+        listen 127.0.0.1:8081;
+        var $new_var set $remote_addr:$remote_port;
+        return $new_var;
     }
 }
 ```
@@ -82,7 +97,15 @@ If cJSON is not installed, the module will still compile successfully but the `e
 
 ## Build Module
 
-To use this module, configure your nginx branch with `--add-module=/path/to/ngx_http_var_module`.
+Configure nginx with this repository as an additional module. Enable Stream to
+build both modules:
+
+```bash
+./configure --with-stream --add-module=/path/to/ngx_http_var_module
+```
+
+Without `--with-stream`, only `ngx_http_var_module` is built. With Stream
+enabled, the same build also includes `ngx_stream_var_module`.
 
 To enable named conditions, build `ngx_condition_module` and this module statically in the same nginx configuration.
 
@@ -90,7 +113,7 @@ To enable named conditions, build `ngx_condition_module` and this module statica
 
 Conditional syntax is selected at compile time:
 
-- With `ngx_condition_module`, use named `condition` expressions and place `var` inside an `http`, `server`, or `location` `when` block. `if=` and `if!=` parameters are rejected.
+- With `ngx_condition_module`, use named `condition` expressions and place `var` inside an HTTP or Stream `when` block at a context supported by the corresponding module. `if=` and `if!=` parameters are rejected.
 - Without `ngx_condition_module`, `when` is unavailable and legacy `if=`/`if!=` parameters remain supported. `if=` matches a non-empty value other than `"0"`; `if!=` matches an empty value or `"0"`.
 
 If a condition does not match, the definition is skipped and the next definition of the same variable is evaluated.
@@ -103,7 +126,9 @@ If a condition does not match, the definition is skipped and the next definition
 
 **Default:** *-*
 
-**Context:** *http, server, location, http when, server when, location when*
+**HTTP context:** *http, server, location, http when, server when, location when*
+
+**Stream context:** *stream, server, stream when, server when*
 
 Define a new variable whose value is the result of function calculation. The variable value cannot be cached and is recalculated each time it is used.
 
@@ -282,7 +307,7 @@ var $new_var hexrand [number_of_bytes];
 
 # On nginx 1.31.3 and later, rand and hexrand use the SipHash-based generator.
 # Older nginx versions retain the legacy generator.
-# Each generated value is cached for the current request, so repeated
+# Each generated value is cached for the current request or session, so repeated
 # evaluations of the same rule return the same value.
 # These operators are intended for non-security identifiers, not secrets.
 
@@ -400,9 +425,9 @@ var $new_var unix_time src_time date_format [timezone];
 var $new_var cidr ipv4/ipv6 ipv4_network_bits [ipv6_network_bits];
 ```
 
-All parameters except regular expressions can contain variables. However, incorrect parameter values ​​will cause the function calculation result to be empty.
+All parameters except regular expressions can contain variables. However, incorrect parameter values will cause the function calculation result to be empty.
 
-Variables defined with the `var` directive can be overwritten by directives such as `set` and `auth_request_set`.
+Variables defined with the `var` directive can be overwritten by HTTP or Stream directives that assign the same variable.
 
 With `ngx_condition_module`, conditional definitions use `when`. Multiple names in one `when` block are combined with AND, and a condition name can be negated with a `!` prefix:
 
@@ -425,6 +450,23 @@ var $new_var set not-have-a-or-b;
 ```
 
 Without `ngx_condition_module`, express the same chain with legacy `if=`/`if!=` parameters.
+
+The same conditional model is available in Stream. For example:
+
+```nginx
+condition has_sni is_not_empty $ssl_preread_server_name;
+condition is_example str_eq -i $ssl_preread_server_name example.com;
+
+when has_sni is_example {
+    var $new_var set example-sni;
+}
+
+when !has_sni {
+    var $new_var set no-sni;
+}
+
+var $new_var set other-sni;
+```
 
 # Author
 
