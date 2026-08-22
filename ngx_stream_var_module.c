@@ -14,7 +14,7 @@
 #include <ngx_stream_condition_module.h>
 #endif
 
-#if (NGX_STREAM_SSL)
+#if (NGX_OPENSSL)
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #endif
@@ -99,7 +99,7 @@ typedef enum {
     NGX_STREAM_VAR_FUNC_MD5,
     NGX_STREAM_VAR_FUNC_SHA1,
 
-#if (NGX_STREAM_SSL)
+#if (NGX_OPENSSL)
     NGX_STREAM_VAR_FUNC_SHA224,
     NGX_STREAM_VAR_FUNC_SHA256,
     NGX_STREAM_VAR_FUNC_SHA384,
@@ -122,13 +122,20 @@ typedef enum {
 } ngx_stream_var_func_e;
 
 
+typedef struct ngx_stream_var_rule_s  ngx_stream_var_rule_t;
+typedef struct ngx_stream_var_func_s  ngx_stream_var_func_t;
+
+typedef ngx_int_t (*ngx_stream_var_func_pt)(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+
+
 typedef struct {
     ngx_array_t                   *vars;
 } ngx_stream_var_conf_t;
 
 
-typedef struct {
-    ngx_stream_var_func_e          func;        /* function type */
+struct ngx_stream_var_rule_s {
+    ngx_stream_var_func_t         *func;        /* function definition */
     ngx_uint_t                     ignore_case; /* ignore case sensitivity */
     ngx_array_t                   *args;        /* function extra args */
 #if (NGX_CONDITION)
@@ -141,7 +148,7 @@ typedef struct {
 #if (NGX_PCRE)
     ngx_stream_regex_t            *regex;       /* compiled regex */
 #endif
-} ngx_stream_var_rule_t;
+};
 
 
 typedef struct {
@@ -163,19 +170,20 @@ typedef struct {
 } ngx_stream_var_ctx_t;
 
 
-typedef struct {
-    ngx_str_t                      name;        /* function string */
-    ngx_stream_var_func_e          func;        /* function enum */
+struct ngx_stream_var_func_s {
+    ngx_str_t                      name;        /* function name */
+    ngx_stream_var_func_pt         handler;     /* function handler */
+    ngx_stream_var_func_e          type;        /* function type */
     ngx_uint_t                     min_args;    /* min number of arguments */
     ngx_uint_t                     max_args;    /* max number of arguments */
-} ngx_stream_var_func_t;
+};
 
 
 static void *ngx_stream_var_create_srv_conf(ngx_conf_t *cf);
 static char *ngx_stream_var_merge_srv_conf(ngx_conf_t *cf, void *parent,
     void *child);
 
-static char *ngx_stream_var_create_variable(ngx_conf_t *cf, ngx_command_t *cmd,
+static char *ngx_stream_var(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
 static ngx_stream_var_ctx_t *ngx_stream_var_get_ctx(ngx_stream_session_t *s);
@@ -187,483 +195,523 @@ static ngx_int_t ngx_stream_var_get_cached_random(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 static ngx_int_t ngx_stream_var_cache_random(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_find_rule(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_select_rule(ngx_stream_session_t *s,
     ngx_stream_var_variable_t *var, ngx_stream_var_rule_t **rule);
-static ngx_int_t ngx_stream_var_evaluate_rule(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 static ngx_int_t ngx_stream_var_variable_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, uintptr_t data);
 
-static ngx_int_t ngx_stream_var_utils_check_str_is_num(ngx_str_t num_str);
-static ngx_int_t ngx_stream_var_utils_auto_atoi(ngx_str_t val,
+static ngx_int_t ngx_stream_var_helper_check_str_is_num(ngx_str_t num_str);
+static ngx_int_t ngx_stream_var_helper_auto_atoi(ngx_str_t val,
     ngx_int_t *int_val);
-static ngx_int_t ngx_stream_var_utils_auto_atofp(ngx_str_t val1,
+static ngx_int_t ngx_stream_var_helper_auto_atofp(ngx_str_t val1,
     ngx_str_t val2, ngx_int_t *int_val1, ngx_int_t *int_val2);
-static ngx_int_t ngx_stream_var_utils_escape_uri(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_helper_escape_uri(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule,
     ngx_uint_t type);
-static u_char *ngx_stream_var_utils_strlstrn(u_char *s1, u_char *last,
+static u_char *ngx_stream_var_helper_strlstrn(u_char *s1, u_char *last,
     u_char *s2, size_t n);
-static ngx_int_t ngx_stream_var_utils_filter_params(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_helper_filter_params(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule,
     ngx_uint_t keep);
 
-#if (NGX_STREAM_SSL)
-static ngx_int_t ngx_stream_var_utils_sha(ngx_stream_session_t *s,
+#if (NGX_OPENSSL)
+static ngx_int_t ngx_stream_var_helper_sha(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule,
     const EVP_MD *evp_md, size_t len);
-static ngx_int_t ngx_stream_var_utils_hmac(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_helper_hmac(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule,
     const EVP_MD *evp_md);
 #endif
 
 
-static ngx_int_t ngx_stream_var_exec_set(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_set_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_len(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_len_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_upper(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_upper_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_lower(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_lower_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_initcap(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_initcap_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_trim(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_trim_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_ltrim(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_ltrim_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_rtrim(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_rtrim_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_reverse(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_reverse_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_position(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_position_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_repeat(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_repeat_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_substr(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_substr_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_replace(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_replace_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_extract_param(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_extract_param_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_keep_params(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_remove_params(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_params_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 
 #if (NGX_CJSON)
-static ngx_int_t ngx_stream_var_exec_extract_json(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_extract_json_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 #endif
 
 #if (NGX_PCRE)
-static ngx_int_t ngx_stream_var_exec_regex_capture(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_regex_capture_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_regex_sub(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-#endif
-
-
-static ngx_int_t ngx_stream_var_exec_abs(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_max(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_min(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_add(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_sub(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_mul(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_div(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_mod(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_bitwise_and(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_bitwise_not(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_bitwise_or(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_bitwise_xor(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_lshift(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_rshift(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_urshift(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_round(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_int(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_floor(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_ceil(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_rand(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_hexrand(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-
-static ngx_int_t ngx_stream_var_exec_hex_encode(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_hex_decode(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_dec_to_hex(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_hex_to_dec(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_escape_uri(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_escape_args(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_escape_uri_component(
-    ngx_stream_session_t *s, ngx_stream_variable_value_t *v,
-    ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_escape_html(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_unescape_uri(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_base64_encode(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_base64url_encode(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_base64_decode(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_base64url_decode(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-
-static ngx_int_t ngx_stream_var_exec_crc32(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_md5(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_sha1(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-
-#if (NGX_STREAM_SSL)
-static ngx_int_t ngx_stream_var_exec_sha224(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_sha256(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_sha384(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_sha512(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_hmac_md5(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_hmac_sha1(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_hmac_sha224(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_hmac_sha256(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_hmac_sha384(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_hmac_sha512(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_regex_sub_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 #endif
 
-static ngx_int_t ngx_stream_var_exec_gmt_time(ngx_stream_session_t *s,
+
+static ngx_int_t ngx_stream_var_abs_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_local_time(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_max_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_exec_unix_time(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_min_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_add_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_sub_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_mul_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_div_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_mod_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_bitwise_and_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_bitwise_not_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_bitwise_or_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_bitwise_xor_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_lshift_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_rshift_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_urshift_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_round_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_int_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_floor_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_ceil_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_rand_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_hexrand_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 
-static ngx_int_t ngx_stream_var_exec_cidr(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_hex_encode_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_hex_decode_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_dec_to_hex_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_hex_to_dec_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_escape_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_unescape_uri_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_base64_encode_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_base64_decode_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+
+static ngx_int_t ngx_stream_var_crc32_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_md5_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_sha1_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+
+#if (NGX_OPENSSL)
+static ngx_int_t ngx_stream_var_sha_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_hmac_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+#endif
+
+static ngx_int_t ngx_stream_var_gmt_time_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_local_time_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+
+static ngx_int_t ngx_stream_var_cidr_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 
 
 static ngx_stream_var_func_t  ngx_stream_var_funcs[] = {
     { ngx_string("set"),
+      ngx_stream_var_set_handler,
       NGX_STREAM_VAR_FUNC_SET,
       1, 1 },
 
     { ngx_string("len"),
+      ngx_stream_var_len_handler,
       NGX_STREAM_VAR_FUNC_LEN,
       1, 1 },
 
     { ngx_string("upper"),
+      ngx_stream_var_upper_handler,
       NGX_STREAM_VAR_FUNC_UPPER,
       1, 1 },
 
     { ngx_string("lower"),
+      ngx_stream_var_lower_handler,
       NGX_STREAM_VAR_FUNC_LOWER,
       1, 1 },
 
     { ngx_string("initcap"),
+      ngx_stream_var_initcap_handler,
       NGX_STREAM_VAR_FUNC_INITCAP,
       1, 1 },
 
     { ngx_string("trim"),
+      ngx_stream_var_trim_handler,
       NGX_STREAM_VAR_FUNC_TRIM,
       1, 2 },
 
     { ngx_string("ltrim"),
+      ngx_stream_var_ltrim_handler,
       NGX_STREAM_VAR_FUNC_LTRIM,
       1, 2 },
 
     { ngx_string("rtrim"),
+      ngx_stream_var_rtrim_handler,
       NGX_STREAM_VAR_FUNC_RTRIM,
       1, 2 },
 
     { ngx_string("reverse"),
+      ngx_stream_var_reverse_handler,
       NGX_STREAM_VAR_FUNC_REVERSE,
       1, 1 },
 
     { ngx_string("position"),
+      ngx_stream_var_position_handler,
       NGX_STREAM_VAR_FUNC_POSITION,
       2, 2 },
 
     { ngx_string("repeat"),
+      ngx_stream_var_repeat_handler,
       NGX_STREAM_VAR_FUNC_REPEAT,
       2, 2 },
 
     { ngx_string("substr"),
+      ngx_stream_var_substr_handler,
       NGX_STREAM_VAR_FUNC_SUBSTR,
       2, 3 },
 
     { ngx_string("replace"),
+      ngx_stream_var_replace_handler,
       NGX_STREAM_VAR_FUNC_REPLACE,
       3, 3 },
 
     { ngx_string("extract_param"),
+      ngx_stream_var_extract_param_handler,
       NGX_STREAM_VAR_FUNC_EXTRACT_PARAM,
       4, 4 },
 
     { ngx_string("keep_params"),
+      ngx_stream_var_params_handler,
       NGX_STREAM_VAR_FUNC_KEEP_PARAMS,
       4, NGX_STREAM_VAR_MAX_ARGS },
 
     { ngx_string("remove_params"),
+      ngx_stream_var_params_handler,
       NGX_STREAM_VAR_FUNC_REMOVE_PARAMS,
       4, NGX_STREAM_VAR_MAX_ARGS },
 
 #if (NGX_CJSON)
     { ngx_string("extract_json"),
+      ngx_stream_var_extract_json_handler,
       NGX_STREAM_VAR_FUNC_EXTRACT_JSON,
       2, NGX_STREAM_VAR_MAX_ARGS },
 #endif
 
 #if (NGX_PCRE)
     { ngx_string("regex_capture"),
+      ngx_stream_var_regex_capture_handler,
       NGX_STREAM_VAR_FUNC_REGEX_CAPTURE,
       3, 3 },
 
     { ngx_string("regex_sub"),
+      ngx_stream_var_regex_sub_handler,
       NGX_STREAM_VAR_FUNC_REGEX_SUB,
       3, 3 },
 #endif
 
     { ngx_string("abs"),
+      ngx_stream_var_abs_handler,
       NGX_STREAM_VAR_FUNC_ABS,
       1, 1 },
 
     { ngx_string("max"),
+      ngx_stream_var_max_handler,
       NGX_STREAM_VAR_FUNC_MAX,
       2, 2 },
 
     { ngx_string("min"),
+      ngx_stream_var_min_handler,
       NGX_STREAM_VAR_FUNC_MIN,
       2, 2 },
 
     { ngx_string("add"),
+      ngx_stream_var_add_handler,
       NGX_STREAM_VAR_FUNC_ADD,
       2, 2 },
 
     { ngx_string("sub"),
+      ngx_stream_var_sub_handler,
       NGX_STREAM_VAR_FUNC_SUB,
       2, 2 },
 
     { ngx_string("mul"),
+      ngx_stream_var_mul_handler,
       NGX_STREAM_VAR_FUNC_MUL,
       2, 2 },
 
     { ngx_string("div"),
+      ngx_stream_var_div_handler,
       NGX_STREAM_VAR_FUNC_DIV,
       2, 2 },
 
     { ngx_string("mod"),
+      ngx_stream_var_mod_handler,
       NGX_STREAM_VAR_FUNC_MOD,
       2, 2 },
 
     { ngx_string("bitwise_and"),
+      ngx_stream_var_bitwise_and_handler,
       NGX_STREAM_VAR_FUNC_BITWISE_AND,
       2, 2 },
 
     { ngx_string("bitwise_not"),
+      ngx_stream_var_bitwise_not_handler,
       NGX_STREAM_VAR_FUNC_BITWISE_NOT,
       1, 1 },
 
     { ngx_string("bitwise_or"),
+      ngx_stream_var_bitwise_or_handler,
       NGX_STREAM_VAR_FUNC_BITWISE_OR,
       2, 2 },
 
     { ngx_string("bitwise_xor"),
+      ngx_stream_var_bitwise_xor_handler,
       NGX_STREAM_VAR_FUNC_BITWISE_XOR,
       2, 2 },
 
     { ngx_string("lshift"),
+      ngx_stream_var_lshift_handler,
       NGX_STREAM_VAR_FUNC_LSHIFT,
       2, 2 },
 
     { ngx_string("rshift"),
+      ngx_stream_var_rshift_handler,
       NGX_STREAM_VAR_FUNC_RSHIFT,
       2, 2 },
 
     { ngx_string("urshift"),
+      ngx_stream_var_urshift_handler,
       NGX_STREAM_VAR_FUNC_URSHIFT,
       2, 2 },
 
     { ngx_string("round"),
+      ngx_stream_var_round_handler,
       NGX_STREAM_VAR_FUNC_ROUND,
       2, 2 },
 
     { ngx_string("int"),
+      ngx_stream_var_int_handler,
       NGX_STREAM_VAR_FUNC_INT,
       1, 1 },
 
     { ngx_string("floor"),
+      ngx_stream_var_floor_handler,
       NGX_STREAM_VAR_FUNC_FLOOR,
       1, 1 },
 
     { ngx_string("ceil"),
+      ngx_stream_var_ceil_handler,
       NGX_STREAM_VAR_FUNC_CEIL,
       1, 1 },
 
     { ngx_string("rand"),
+      ngx_stream_var_rand_handler,
       NGX_STREAM_VAR_FUNC_RAND,
       NGX_STREAM_VAR_NO_ARGS, 2 },
 
     { ngx_string("hexrand"),
+      ngx_stream_var_hexrand_handler,
       NGX_STREAM_VAR_FUNC_HEXRAND,
       NGX_STREAM_VAR_NO_ARGS, 1 },
 
     { ngx_string("hex_encode"),
+      ngx_stream_var_hex_encode_handler,
       NGX_STREAM_VAR_FUNC_HEX_ENCODE,
       1, 1 },
 
     { ngx_string("hex_decode"),
+      ngx_stream_var_hex_decode_handler,
       NGX_STREAM_VAR_FUNC_HEX_DECODE,
       1, 1 },
 
     { ngx_string("dec_to_hex"),
+      ngx_stream_var_dec_to_hex_handler,
       NGX_STREAM_VAR_FUNC_DEC_TO_HEX,
       1, 1 },
 
     { ngx_string("hex_to_dec"),
+      ngx_stream_var_hex_to_dec_handler,
       NGX_STREAM_VAR_FUNC_HEX_TO_DEC,
       1, 1 },
 
     { ngx_string("escape_uri"),
+      ngx_stream_var_escape_handler,
       NGX_STREAM_VAR_FUNC_ESCAPE_URI,
       1, 1 },
 
     { ngx_string("escape_args"),
+      ngx_stream_var_escape_handler,
       NGX_STREAM_VAR_FUNC_ESCAPE_ARGS,
       1, 1 },
 
     { ngx_string("escape_uri_component"),
+      ngx_stream_var_escape_handler,
       NGX_STREAM_VAR_FUNC_ESCAPE_URI_COMPONENT,
       1, 1 },
 
     { ngx_string("escape_html"),
+      ngx_stream_var_escape_handler,
       NGX_STREAM_VAR_FUNC_ESCAPE_HTML,
       1, 1 },
 
     { ngx_string("unescape_uri"),
+      ngx_stream_var_unescape_uri_handler,
       NGX_STREAM_VAR_FUNC_UNESCAPE_URI,
       1, 1 },
 
     { ngx_string("base64_encode"),
+      ngx_stream_var_base64_encode_handler,
       NGX_STREAM_VAR_FUNC_BASE64_ENCODE,
       1, 1 },
 
     { ngx_string("base64url_encode"),
+      ngx_stream_var_base64_encode_handler,
       NGX_STREAM_VAR_FUNC_BASE64URL_ENCODE,
       1, 1 },
 
     { ngx_string("base64_decode"),
+      ngx_stream_var_base64_decode_handler,
       NGX_STREAM_VAR_FUNC_BASE64_DECODE,
       1, 1 },
 
     { ngx_string("base64url_decode"),
+      ngx_stream_var_base64_decode_handler,
       NGX_STREAM_VAR_FUNC_BASE64URL_DECODE,
       1, 1 },
 
     { ngx_string("crc32"),
+      ngx_stream_var_crc32_handler,
       NGX_STREAM_VAR_FUNC_CRC32,
       1, 1 },
 
     { ngx_string("md5"),
+      ngx_stream_var_md5_handler,
       NGX_STREAM_VAR_FUNC_MD5,
       1, 1 },
 
     { ngx_string("sha1"),
+      ngx_stream_var_sha1_handler,
       NGX_STREAM_VAR_FUNC_SHA1,
       1, 1 },
 
-#if (NGX_STREAM_SSL)
+#if (NGX_OPENSSL)
     { ngx_string("sha224"),
+      ngx_stream_var_sha_handler,
       NGX_STREAM_VAR_FUNC_SHA224,
       1, 1 },
 
     { ngx_string("sha256"),
+      ngx_stream_var_sha_handler,
       NGX_STREAM_VAR_FUNC_SHA256,
       1, 1 },
 
     { ngx_string("sha384"),
+      ngx_stream_var_sha_handler,
       NGX_STREAM_VAR_FUNC_SHA384,
       1, 1 },
 
     { ngx_string("sha512"),
+      ngx_stream_var_sha_handler,
       NGX_STREAM_VAR_FUNC_SHA512,
       1, 1 },
 
     { ngx_string("hmac_md5"),
+      ngx_stream_var_hmac_handler,
       NGX_STREAM_VAR_FUNC_HMAC_MD5,
       2, 2 },
 
     { ngx_string("hmac_sha1"),
+      ngx_stream_var_hmac_handler,
       NGX_STREAM_VAR_FUNC_HMAC_SHA1,
       2, 2 },
 
     { ngx_string("hmac_sha224"),
+      ngx_stream_var_hmac_handler,
       NGX_STREAM_VAR_FUNC_HMAC_SHA224,
       2, 2 },
 
     { ngx_string("hmac_sha256"),
+      ngx_stream_var_hmac_handler,
       NGX_STREAM_VAR_FUNC_HMAC_SHA256,
       2, 2 },
 
     { ngx_string("hmac_sha384"),
+      ngx_stream_var_hmac_handler,
       NGX_STREAM_VAR_FUNC_HMAC_SHA384,
       2, 2 },
 
     { ngx_string("hmac_sha512"),
+      ngx_stream_var_hmac_handler,
       NGX_STREAM_VAR_FUNC_HMAC_SHA512,
       2, 2 },
 #endif
 
     { ngx_string("gmt_time"),
+      ngx_stream_var_gmt_time_handler,
       NGX_STREAM_VAR_FUNC_GMT_TIME,
       1, 2 },
 
     { ngx_string("local_time"),
+      ngx_stream_var_local_time_handler,
       NGX_STREAM_VAR_FUNC_LOCAL_TIME,
       1, 2 },
 
     { ngx_string("unix_time"),
+      ngx_stream_var_unix_time_handler,
       NGX_STREAM_VAR_FUNC_UNIX_TIME,
       NGX_STREAM_VAR_NO_ARGS, 3 },
 
     { ngx_string("cidr"),
+      ngx_stream_var_cidr_handler,
       NGX_STREAM_VAR_FUNC_CIDR,
       2, 3 },
 
     { ngx_null_string,
+      NULL,
       NGX_STREAM_VAR_FUNC_UNKNOWN,
       NGX_STREAM_VAR_NO_ARGS, NGX_STREAM_VAR_NO_ARGS }
 };
@@ -678,7 +726,7 @@ static ngx_command_t  ngx_stream_var_commands[] = {
                            |NGX_STREAM_SRV_WHEN_CONF
 #endif
                            |NGX_CONF_2MORE,
-      ngx_stream_var_create_variable,
+      ngx_stream_var,
       NGX_STREAM_SRV_CONF_OFFSET,
       0,
       NULL },
@@ -786,7 +834,7 @@ ngx_stream_var_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
 
 static char *
-ngx_stream_var_create_variable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+ngx_stream_var(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_stream_var_conf_t       *vcf = conf;
 
@@ -798,9 +846,9 @@ ngx_stream_var_create_variable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_stream_variable_t       *v;
     ngx_stream_var_variable_t   *var;
     ngx_stream_var_rule_t       *rule;
+    ngx_stream_var_func_t       *func;
     ngx_uint_t                   i;
-    ngx_stream_var_func_e        func;
-    ngx_uint_t                   ignore_case, args, min_args, max_args;
+    ngx_uint_t                   ignore_case, args;
 #if !(NGX_CONDITION)
     ngx_stream_complex_value_t  *filter;
     ngx_uint_t                   negative;
@@ -833,21 +881,17 @@ ngx_stream_var_create_variable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     ngx_strlow(value[2].data, value[2].data, value[2].len);
 
-    func = NGX_STREAM_VAR_FUNC_UNKNOWN;
-    for (i = 0; ngx_stream_var_funcs[i].name.len > 0; i++) {
+    for (func = ngx_stream_var_funcs; func->name.len > 0; func++) {
 
-        if (value[2].len == ngx_stream_var_funcs[i].name.len
+        if (value[2].len == func->name.len
             && ngx_strncmp(value[2].data,
-                     ngx_stream_var_funcs[i].name.data, value[2].len) == 0)
+                           func->name.data, value[2].len) == 0)
         {
-            func = ngx_stream_var_funcs[i].func;
-            min_args = ngx_stream_var_funcs[i].min_args;
-            max_args = ngx_stream_var_funcs[i].max_args;
             break;
         }
     }
 
-    if (func == NGX_STREAM_VAR_FUNC_UNKNOWN) {
+    if (func->name.len == 0) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "var: unsupported function \"%V\"",
                            &value[2]);
@@ -916,7 +960,7 @@ ngx_stream_var_create_variable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         cur++;
     }
 
-    if (args < min_args || args > max_args) {
+    if (args < func->min_args || args > func->max_args) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "var: invalid number of arguments "
                            "for function \"%V\"", &value[2]);
@@ -988,8 +1032,8 @@ ngx_stream_var_create_variable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
 #if (NGX_PCRE)
 
-    if (func == NGX_STREAM_VAR_FUNC_REGEX_CAPTURE
-        || func == NGX_STREAM_VAR_FUNC_REGEX_SUB)
+    if (func->type == NGX_STREAM_VAR_FUNC_REGEX_CAPTURE
+        || func->type == NGX_STREAM_VAR_FUNC_REGEX_SUB)
     {
         args--;
 
@@ -1016,7 +1060,7 @@ ngx_stream_var_create_variable(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
         cur++;
 
-        if (func == NGX_STREAM_VAR_FUNC_REGEX_SUB) {
+        if (func->type == NGX_STREAM_VAR_FUNC_REGEX_SUB) {
             regex_len = value[cur].len + 2;
             regex.data = ngx_pnalloc(cf->pool, regex_len);
             if (regex.data == NULL) {
@@ -1246,7 +1290,7 @@ ngx_stream_var_cache_random(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_find_rule(ngx_stream_session_t *s,
+ngx_stream_var_select_rule(ngx_stream_session_t *s,
     ngx_stream_var_variable_t *var, ngx_stream_var_rule_t **rule)
 {
     ngx_stream_var_rule_t      *rules;
@@ -1299,238 +1343,6 @@ ngx_stream_var_find_rule(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_evaluate_rule(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    switch (rule->func) {
-
-    case NGX_STREAM_VAR_FUNC_SET:
-        return ngx_stream_var_exec_set(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_LEN:
-        return ngx_stream_var_exec_len(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_UPPER:
-        return ngx_stream_var_exec_upper(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_LOWER:
-        return ngx_stream_var_exec_lower(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_INITCAP:
-        return ngx_stream_var_exec_initcap(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_TRIM:
-        return ngx_stream_var_exec_trim(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_LTRIM:
-        return ngx_stream_var_exec_ltrim(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_RTRIM:
-        return ngx_stream_var_exec_rtrim(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_REVERSE:
-        return ngx_stream_var_exec_reverse(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_POSITION:
-        return ngx_stream_var_exec_position(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_REPEAT:
-        return ngx_stream_var_exec_repeat(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_SUBSTR:
-        return ngx_stream_var_exec_substr(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_REPLACE:
-        return ngx_stream_var_exec_replace(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_EXTRACT_PARAM:
-        return ngx_stream_var_exec_extract_param(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_KEEP_PARAMS:
-        return ngx_stream_var_exec_keep_params(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_REMOVE_PARAMS:
-        return ngx_stream_var_exec_remove_params(s, v, rule);
-
-#if (NGX_CJSON)
-    case NGX_STREAM_VAR_FUNC_EXTRACT_JSON:
-        return ngx_stream_var_exec_extract_json(s, v, rule);
-#endif
-
-#if (NGX_PCRE)
-    case NGX_STREAM_VAR_FUNC_REGEX_CAPTURE:
-        return ngx_stream_var_exec_regex_capture(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_REGEX_SUB:
-        return ngx_stream_var_exec_regex_sub(s, v, rule);
-#endif
-
-    case NGX_STREAM_VAR_FUNC_ABS:
-        return ngx_stream_var_exec_abs(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_MAX:
-        return ngx_stream_var_exec_max(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_MIN:
-        return ngx_stream_var_exec_min(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_ADD:
-        return ngx_stream_var_exec_add(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_SUB:
-        return ngx_stream_var_exec_sub(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_MUL:
-        return ngx_stream_var_exec_mul(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_DIV:
-        return ngx_stream_var_exec_div(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_MOD:
-        return ngx_stream_var_exec_mod(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_BITWISE_AND:
-        return ngx_stream_var_exec_bitwise_and(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_BITWISE_NOT:
-        return ngx_stream_var_exec_bitwise_not(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_BITWISE_OR:
-        return ngx_stream_var_exec_bitwise_or(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_BITWISE_XOR:
-        return ngx_stream_var_exec_bitwise_xor(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_LSHIFT:
-        return ngx_stream_var_exec_lshift(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_RSHIFT:
-        return ngx_stream_var_exec_rshift(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_URSHIFT:
-        return ngx_stream_var_exec_urshift(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_ROUND:
-        return ngx_stream_var_exec_round(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_INT:
-        return ngx_stream_var_exec_int(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_FLOOR:
-        return ngx_stream_var_exec_floor(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_CEIL:
-        return ngx_stream_var_exec_ceil(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_RAND:
-        return ngx_stream_var_exec_rand(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_HEXRAND:
-        return ngx_stream_var_exec_hexrand(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_HEX_ENCODE:
-        return ngx_stream_var_exec_hex_encode(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_DEC_TO_HEX:
-        return ngx_stream_var_exec_dec_to_hex(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_HEX_TO_DEC:
-        return ngx_stream_var_exec_hex_to_dec(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_HEX_DECODE:
-        return ngx_stream_var_exec_hex_decode(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_ESCAPE_URI:
-        return ngx_stream_var_exec_escape_uri(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_ESCAPE_ARGS:
-        return ngx_stream_var_exec_escape_args(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_ESCAPE_URI_COMPONENT:
-        return ngx_stream_var_exec_escape_uri_component(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_ESCAPE_HTML:
-        return ngx_stream_var_exec_escape_html(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_UNESCAPE_URI:
-        return ngx_stream_var_exec_unescape_uri(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_BASE64_ENCODE:
-        return ngx_stream_var_exec_base64_encode(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_BASE64URL_ENCODE:
-        return ngx_stream_var_exec_base64url_encode(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_BASE64_DECODE:
-        return ngx_stream_var_exec_base64_decode(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_BASE64URL_DECODE:
-        return ngx_stream_var_exec_base64url_decode(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_CRC32:
-        return ngx_stream_var_exec_crc32(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_MD5:
-        return ngx_stream_var_exec_md5(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_SHA1:
-        return ngx_stream_var_exec_sha1(s, v, rule);
-
-#if (NGX_STREAM_SSL)
-    case NGX_STREAM_VAR_FUNC_SHA224:
-        return ngx_stream_var_exec_sha224(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_SHA256:
-        return ngx_stream_var_exec_sha256(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_SHA384:
-        return ngx_stream_var_exec_sha384(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_SHA512:
-        return ngx_stream_var_exec_sha512(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_HMAC_MD5:
-        return ngx_stream_var_exec_hmac_md5(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_HMAC_SHA1:
-        return ngx_stream_var_exec_hmac_sha1(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_HMAC_SHA224:
-        return ngx_stream_var_exec_hmac_sha224(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_HMAC_SHA256:
-        return ngx_stream_var_exec_hmac_sha256(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_HMAC_SHA384:
-        return ngx_stream_var_exec_hmac_sha384(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_HMAC_SHA512:
-        return ngx_stream_var_exec_hmac_sha512(s, v, rule);
-#endif
-
-    case NGX_STREAM_VAR_FUNC_GMT_TIME:
-        return ngx_stream_var_exec_gmt_time(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_LOCAL_TIME:
-        return ngx_stream_var_exec_local_time(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_UNIX_TIME:
-        return ngx_stream_var_exec_unix_time(s, v, rule);
-
-    case NGX_STREAM_VAR_FUNC_CIDR:
-        return ngx_stream_var_exec_cidr(s, v, rule);
-
-    default:
-        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
-                      "var: unknown function");
-        return NGX_ERROR;
-    }
-
-    return NGX_ERROR;
-}
-
-
-static ngx_int_t
 ngx_stream_var_variable_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, uintptr_t data)
 {
@@ -1575,7 +1387,7 @@ ngx_stream_var_variable_handler(ngx_stream_session_t *s,
         return NGX_OK;
     }
 
-    rc = ngx_stream_var_find_rule(s, var, &rule);
+    rc = ngx_stream_var_select_rule(s, var, &rule);
 
     if (rc == NGX_ERROR) {
         return NGX_ERROR;
@@ -1597,7 +1409,7 @@ ngx_stream_var_variable_handler(ngx_stream_session_t *s,
     }
 
     /* evaluate the variable expression */
-    rc = ngx_stream_var_evaluate_rule(s, v, rule);
+    rc = rule->func->handler(s, v, rule);
 
     /* evaluation is complete, release the lock */
     ngx_stream_variable_release_lock(s, var->index);
@@ -1621,7 +1433,7 @@ ngx_stream_var_variable_handler(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_utils_check_str_is_num(ngx_str_t val)
+ngx_stream_var_helper_check_str_is_num(ngx_str_t val)
 {
     ngx_str_t    val_abs;
     ngx_int_t    num;
@@ -1664,7 +1476,7 @@ ngx_stream_var_utils_check_str_is_num(ngx_str_t val)
 
 
 static ngx_int_t
-ngx_stream_var_utils_auto_atoi(ngx_str_t val, ngx_int_t *int_val)
+ngx_stream_var_helper_auto_atoi(ngx_str_t val, ngx_int_t *int_val)
 {
     ngx_int_t  is_negative;
 
@@ -1700,7 +1512,7 @@ ngx_stream_var_utils_auto_atoi(ngx_str_t val, ngx_int_t *int_val)
 
 
 static ngx_int_t
-ngx_stream_var_utils_auto_atofp(ngx_str_t val1, ngx_str_t val2,
+ngx_stream_var_helper_auto_atofp(ngx_str_t val1, ngx_str_t val2,
     ngx_int_t *int_val1, ngx_int_t *int_val2)
 {
     ngx_uint_t   decimal_places1, decimal_places2, max_decimal_places;
@@ -1782,7 +1594,7 @@ ngx_stream_var_utils_auto_atofp(ngx_str_t val1, ngx_str_t val2,
 
 
 static ngx_int_t
-ngx_stream_var_utils_escape_uri(ngx_stream_session_t *s,
+ngx_stream_var_helper_escape_uri(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule,
     ngx_uint_t type)
 {
@@ -1830,12 +1642,12 @@ ngx_stream_var_utils_escape_uri(ngx_stream_session_t *s,
 
 /*
  * same as ngx_strlcasestrn(), but case-sensitive.
- * ngx_stream_var_utils_strlstrn() is intended to search for static substring
+ * ngx_stream_var_helper_strlstrn() is intended to search for static substring
  * with known length in string until the argument last. The argument n
  * must be length of the second substring - 1.
  */
 static u_char *
-ngx_stream_var_utils_strlstrn(u_char *s1, u_char *last, u_char *s2, size_t n)
+ngx_stream_var_helper_strlstrn(u_char *s1, u_char *last, u_char *s2, size_t n)
 {
     ngx_uint_t  c1, c2;
 
@@ -1860,7 +1672,7 @@ ngx_stream_var_utils_strlstrn(u_char *s1, u_char *last, u_char *s2, size_t n)
 
 
 static ngx_int_t
-ngx_stream_var_utils_filter_params(ngx_stream_session_t *s,
+ngx_stream_var_helper_filter_params(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule,
     ngx_uint_t keep)
 {
@@ -2101,10 +1913,10 @@ return_original:
 }
 
 
-#if (NGX_STREAM_SSL)
+#if (NGX_OPENSSL)
 
 static ngx_int_t
-ngx_stream_var_utils_sha(ngx_stream_session_t *s,
+ngx_stream_var_helper_sha(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule,
     const EVP_MD *evp_md, size_t hash_len)
 {
@@ -2163,7 +1975,7 @@ failed:
 
 
 static ngx_int_t
-ngx_stream_var_utils_hmac(ngx_stream_session_t *s,
+ngx_stream_var_helper_hmac(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule,
     const EVP_MD *evp_md)
 {
@@ -2206,7 +2018,7 @@ ngx_stream_var_utils_hmac(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_set(ngx_stream_session_t *s,
+ngx_stream_var_set_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2226,7 +2038,7 @@ ngx_stream_var_exec_set(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_len(ngx_stream_session_t *s,
+ngx_stream_var_len_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2252,7 +2064,7 @@ ngx_stream_var_exec_len(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_upper(ngx_stream_session_t *s,
+ngx_stream_var_upper_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2286,7 +2098,7 @@ ngx_stream_var_exec_upper(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_lower(ngx_stream_session_t *s,
+ngx_stream_var_lower_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2320,7 +2132,7 @@ ngx_stream_var_exec_lower(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_initcap(ngx_stream_session_t *s,
+ngx_stream_var_initcap_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2373,7 +2185,7 @@ ngx_stream_var_exec_initcap(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_trim(ngx_stream_session_t *s,
+ngx_stream_var_trim_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2434,7 +2246,7 @@ ngx_stream_var_exec_trim(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_ltrim(ngx_stream_session_t *s,
+ngx_stream_var_ltrim_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2487,7 +2299,7 @@ ngx_stream_var_exec_ltrim(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_rtrim(ngx_stream_session_t *s,
+ngx_stream_var_rtrim_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2540,7 +2352,7 @@ ngx_stream_var_exec_rtrim(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_reverse(ngx_stream_session_t *s,
+ngx_stream_var_reverse_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2578,7 +2390,7 @@ ngx_stream_var_exec_reverse(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_position(ngx_stream_session_t *s,
+ngx_stream_var_position_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2612,7 +2424,7 @@ ngx_stream_var_exec_position(ngx_stream_session_t *s,
                                  sub.data, sub.len - 1);
 
     } else {
-        found = ngx_stream_var_utils_strlstrn(val.data, val.data + val.len,
+        found = ngx_stream_var_helper_strlstrn(val.data, val.data + val.len,
                                               sub.data, sub.len - 1);
     }
 
@@ -2638,7 +2450,7 @@ covert_pos:
 
 
 static ngx_int_t
-ngx_stream_var_exec_repeat(ngx_stream_session_t *s,
+ngx_stream_var_repeat_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2685,7 +2497,7 @@ ngx_stream_var_exec_repeat(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_substr(ngx_stream_session_t *s,
+ngx_stream_var_substr_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2742,7 +2554,7 @@ ngx_stream_var_exec_substr(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_replace(ngx_stream_session_t *s,
+ngx_stream_var_replace_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2846,7 +2658,7 @@ ngx_stream_var_exec_replace(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_extract_param(ngx_stream_session_t *s,
+ngx_stream_var_extract_param_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -2929,7 +2741,7 @@ ngx_stream_var_exec_extract_param(ngx_stream_session_t *s,
             p = ngx_strlcasestrn(p, last - 1, name.data, name.len - 1);
 
         } else {
-            p = ngx_stream_var_utils_strlstrn(p, last - 1, name.data,
+            p = ngx_stream_var_helper_strlstrn(p, last - 1, name.data,
                                               name.len - 1);
         }
 
@@ -2982,25 +2794,33 @@ ngx_stream_var_exec_extract_param(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_keep_params(ngx_stream_session_t *s,
+ngx_stream_var_params_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
-    return ngx_stream_var_utils_filter_params(s, v, rule, 1);
-}
+    ngx_uint_t  keep;
 
+    switch (rule->func->type) {
 
-static ngx_int_t
-ngx_stream_var_exec_remove_params(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    return ngx_stream_var_utils_filter_params(s, v, rule, 0);
+    case NGX_STREAM_VAR_FUNC_KEEP_PARAMS:
+        keep = 1;
+        break;
+
+    case NGX_STREAM_VAR_FUNC_REMOVE_PARAMS:
+        keep = 0;
+        break;
+
+    default:
+        return NGX_ERROR;
+    }
+
+    return ngx_stream_var_helper_filter_params(s, v, rule, keep);
 }
 
 
 #if (NGX_CJSON)
 
 static ngx_int_t
-ngx_stream_var_exec_extract_json(ngx_stream_session_t *s,
+ngx_stream_var_extract_json_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3191,7 +3011,7 @@ failed:
 #if (NGX_PCRE)
 
 static ngx_int_t
-ngx_stream_var_exec_regex_capture(ngx_stream_session_t *s,
+ngx_stream_var_regex_capture_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t    *args;
@@ -3230,7 +3050,7 @@ ngx_stream_var_exec_regex_capture(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_regex_sub(ngx_stream_session_t *s,
+ngx_stream_var_regex_sub_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t    *args;
@@ -3295,7 +3115,7 @@ ngx_stream_var_exec_regex_sub(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_abs(ngx_stream_session_t *s,
+ngx_stream_var_abs_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3307,7 +3127,7 @@ ngx_stream_var_exec_abs(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_check_str_is_num(val) != NGX_OK) {
+    if (ngx_stream_var_helper_check_str_is_num(val) != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -3324,7 +3144,7 @@ ngx_stream_var_exec_abs(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_max(ngx_stream_session_t *s,
+ngx_stream_var_max_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3339,7 +3159,7 @@ ngx_stream_var_exec_max(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atofp(val1, val2, &fp_val1, &fp_val2)
+    if (ngx_stream_var_helper_auto_atofp(val1, val2, &fp_val1, &fp_val2)
         != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
@@ -3362,7 +3182,7 @@ ngx_stream_var_exec_max(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_min(ngx_stream_session_t *s,
+ngx_stream_var_min_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3377,7 +3197,7 @@ ngx_stream_var_exec_min(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atofp(val1, val2, &fp_val1, &fp_val2)
+    if (ngx_stream_var_helper_auto_atofp(val1, val2, &fp_val1, &fp_val2)
         != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
@@ -3400,7 +3220,7 @@ ngx_stream_var_exec_min(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_add(ngx_stream_session_t *s,
+ngx_stream_var_add_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3416,8 +3236,8 @@ ngx_stream_var_exec_add(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_stream_var_utils_auto_atoi(val2, &int_val2) != NGX_OK)
+    if (ngx_stream_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
+        || ngx_stream_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value for \"add\" function");
@@ -3451,7 +3271,7 @@ ngx_stream_var_exec_add(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_sub(ngx_stream_session_t *s,
+ngx_stream_var_sub_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3467,8 +3287,8 @@ ngx_stream_var_exec_sub(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_stream_var_utils_auto_atoi(val2, &int_val2) != NGX_OK)
+    if (ngx_stream_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
+        || ngx_stream_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value for \"sub\" function");
@@ -3502,7 +3322,7 @@ ngx_stream_var_exec_sub(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_mul(ngx_stream_session_t *s,
+ngx_stream_var_mul_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3518,8 +3338,8 @@ ngx_stream_var_exec_mul(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_stream_var_utils_auto_atoi(val2, &int_val2) != NGX_OK)
+    if (ngx_stream_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
+        || ngx_stream_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value for \"mul\" function");
@@ -3571,7 +3391,7 @@ ngx_stream_var_exec_mul(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_div(ngx_stream_session_t *s,
+ngx_stream_var_div_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3587,8 +3407,8 @@ ngx_stream_var_exec_div(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_stream_var_utils_auto_atoi(val2, &int_val2) != NGX_OK)
+    if (ngx_stream_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
+        || ngx_stream_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value for \"div\" function");
@@ -3617,7 +3437,7 @@ ngx_stream_var_exec_div(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_mod(ngx_stream_session_t *s,
+ngx_stream_var_mod_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3633,8 +3453,8 @@ ngx_stream_var_exec_mod(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_stream_var_utils_auto_atoi(val2, &int_val2) != NGX_OK)
+    if (ngx_stream_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
+        || ngx_stream_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value for \"mod\" function");
@@ -3663,7 +3483,7 @@ ngx_stream_var_exec_mod(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_bitwise_and(ngx_stream_session_t *s,
+ngx_stream_var_bitwise_and_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3679,8 +3499,8 @@ ngx_stream_var_exec_bitwise_and(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_stream_var_utils_auto_atoi(val2, &int_val2) != NGX_OK)
+    if (ngx_stream_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
+        || ngx_stream_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value");
@@ -3702,7 +3522,7 @@ ngx_stream_var_exec_bitwise_and(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_bitwise_not(ngx_stream_session_t *s,
+ngx_stream_var_bitwise_not_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3716,7 +3536,7 @@ ngx_stream_var_exec_bitwise_not(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atoi(val, &int_val) != NGX_OK) {
+    if (ngx_stream_var_helper_auto_atoi(val, &int_val) != NGX_OK) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value");
         return NGX_ERROR;
@@ -3737,7 +3557,7 @@ ngx_stream_var_exec_bitwise_not(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_bitwise_or(ngx_stream_session_t *s,
+ngx_stream_var_bitwise_or_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3753,8 +3573,8 @@ ngx_stream_var_exec_bitwise_or(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_stream_var_utils_auto_atoi(val2, &int_val2) != NGX_OK)
+    if (ngx_stream_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
+        || ngx_stream_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value");
@@ -3776,7 +3596,7 @@ ngx_stream_var_exec_bitwise_or(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_bitwise_xor(ngx_stream_session_t *s,
+ngx_stream_var_bitwise_xor_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3792,8 +3612,8 @@ ngx_stream_var_exec_bitwise_xor(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_stream_var_utils_auto_atoi(val2, &int_val2) != NGX_OK)
+    if (ngx_stream_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
+        || ngx_stream_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value");
@@ -3815,7 +3635,7 @@ ngx_stream_var_exec_bitwise_xor(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_lshift(ngx_stream_session_t *s,
+ngx_stream_var_lshift_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3831,7 +3651,7 @@ ngx_stream_var_exec_lshift(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atoi(val1, &int_val) != NGX_OK) {
+    if (ngx_stream_var_helper_auto_atoi(val1, &int_val) != NGX_OK) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value");
         return NGX_ERROR;
@@ -3865,7 +3685,7 @@ ngx_stream_var_exec_lshift(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_rshift(ngx_stream_session_t *s,
+ngx_stream_var_rshift_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3881,7 +3701,7 @@ ngx_stream_var_exec_rshift(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atoi(val1, &int_val) != NGX_OK) {
+    if (ngx_stream_var_helper_auto_atoi(val1, &int_val) != NGX_OK) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value");
         return NGX_ERROR;
@@ -3915,7 +3735,7 @@ ngx_stream_var_exec_rshift(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_urshift(ngx_stream_session_t *s,
+ngx_stream_var_urshift_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -3932,7 +3752,7 @@ ngx_stream_var_exec_urshift(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_utils_auto_atoi(val1, &int_val) != NGX_OK) {
+    if (ngx_stream_var_helper_auto_atoi(val1, &int_val) != NGX_OK) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value");
         return NGX_ERROR;
@@ -3967,7 +3787,7 @@ ngx_stream_var_exec_urshift(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_round(ngx_stream_session_t *s,
+ngx_stream_var_round_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -4158,7 +3978,7 @@ ngx_stream_var_exec_round(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_int(ngx_stream_session_t *s,
+ngx_stream_var_int_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -4235,7 +4055,7 @@ ngx_stream_var_exec_int(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_floor(ngx_stream_session_t *s,
+ngx_stream_var_floor_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -4374,7 +4194,7 @@ ngx_stream_var_exec_floor(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_ceil(ngx_stream_session_t *s,
+ngx_stream_var_ceil_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -4551,7 +4371,7 @@ ngx_stream_var_random64(void)
 
 
 static ngx_int_t
-ngx_stream_var_exec_rand(ngx_stream_session_t *s,
+ngx_stream_var_rand_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -4666,7 +4486,7 @@ ngx_stream_var_exec_rand(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_hexrand(ngx_stream_session_t *s,
+ngx_stream_var_hexrand_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -4749,7 +4569,7 @@ ngx_stream_var_exec_hexrand(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_hex_encode(ngx_stream_session_t *s,
+ngx_stream_var_hex_encode_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -4780,7 +4600,7 @@ ngx_stream_var_exec_hex_encode(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_hex_decode(ngx_stream_session_t *s,
+ngx_stream_var_hex_decode_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -4827,7 +4647,7 @@ ngx_stream_var_exec_hex_decode(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_dec_to_hex(ngx_stream_session_t *s,
+ngx_stream_var_dec_to_hex_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -4881,7 +4701,7 @@ ngx_stream_var_exec_dec_to_hex(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_hex_to_dec(ngx_stream_session_t *s,
+ngx_stream_var_hex_to_dec_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -4935,40 +4755,39 @@ ngx_stream_var_exec_hex_to_dec(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_escape_uri(ngx_stream_session_t *s,
+ngx_stream_var_escape_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
-    return ngx_stream_var_utils_escape_uri(s, v, rule, NGX_ESCAPE_URI);
+    ngx_uint_t  type;
+
+    switch (rule->func->type) {
+
+    case NGX_STREAM_VAR_FUNC_ESCAPE_URI:
+        type = NGX_ESCAPE_URI;
+        break;
+
+    case NGX_STREAM_VAR_FUNC_ESCAPE_ARGS:
+        type = NGX_ESCAPE_ARGS;
+        break;
+
+    case NGX_STREAM_VAR_FUNC_ESCAPE_URI_COMPONENT:
+        type = NGX_ESCAPE_URI_COMPONENT;
+        break;
+
+    case NGX_STREAM_VAR_FUNC_ESCAPE_HTML:
+        type = NGX_ESCAPE_HTML;
+        break;
+
+    default:
+        return NGX_ERROR;
+    }
+
+    return ngx_stream_var_helper_escape_uri(s, v, rule, type);
 }
 
 
 static ngx_int_t
-ngx_stream_var_exec_escape_args(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    return ngx_stream_var_utils_escape_uri(s, v, rule, NGX_ESCAPE_ARGS);
-}
-
-
-static ngx_int_t
-ngx_stream_var_exec_escape_uri_component(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    return ngx_stream_var_utils_escape_uri(s, v, rule,
-                                           NGX_ESCAPE_URI_COMPONENT);
-}
-
-
-static ngx_int_t
-ngx_stream_var_exec_escape_html(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    return ngx_stream_var_utils_escape_uri(s, v, rule, NGX_ESCAPE_HTML);
-}
-
-
-static ngx_int_t
-ngx_stream_var_exec_unescape_uri(ngx_stream_session_t *s,
+ngx_stream_var_unescape_uri_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -5005,7 +4824,7 @@ ngx_stream_var_exec_unescape_uri(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_base64_encode(ngx_stream_session_t *s,
+ngx_stream_var_base64_encode_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -5029,7 +4848,19 @@ ngx_stream_var_exec_base64_encode(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    ngx_encode_base64(&dst, &val);
+    switch (rule->func->type) {
+
+    case NGX_STREAM_VAR_FUNC_BASE64_ENCODE:
+        ngx_encode_base64(&dst, &val);
+        break;
+
+    case NGX_STREAM_VAR_FUNC_BASE64URL_ENCODE:
+        ngx_encode_base64url(&dst, &val);
+        break;
+
+    default:
+        return NGX_ERROR;
+    }
 
     v->len = dst.len;
     v->data = dst.data;
@@ -5039,44 +4870,11 @@ ngx_stream_var_exec_base64_encode(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_base64url_encode(ngx_stream_session_t *s,
+ngx_stream_var_base64_decode_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val, dst;
-
-    args = rule->args->elts;
-
-    if (ngx_stream_complex_value(s, &args[0], &val) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    if (val.len == 0) {
-        v->len = 0;
-        v->data = (u_char *) "";
-        return NGX_OK;
-    }
-
-    dst.len = ngx_base64_encoded_length(val.len);
-    dst.data = ngx_pnalloc(s->connection->pool, dst.len);
-    if (dst.data == NULL) {
-        return NGX_ERROR;
-    }
-
-    ngx_encode_base64url(&dst, &val);
-
-    v->len = dst.len;
-    v->data = dst.data;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_stream_var_exec_base64_decode(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    ngx_stream_complex_value_t  *args;
+    ngx_int_t                    rc;
     ngx_str_t                    val, dst;
 
     args = rule->args->elts;
@@ -5097,9 +4895,24 @@ ngx_stream_var_exec_base64_decode(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_decode_base64(&dst, &val) != NGX_OK) {
+    switch (rule->func->type) {
+
+    case NGX_STREAM_VAR_FUNC_BASE64_DECODE:
+        rc = ngx_decode_base64(&dst, &val);
+        break;
+
+    case NGX_STREAM_VAR_FUNC_BASE64URL_DECODE:
+        rc = ngx_decode_base64url(&dst, &val);
+        break;
+
+    default:
+        return NGX_ERROR;
+    }
+
+    if (rc != NGX_OK) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: failed to decode base64 string");
+                      "var: failed to decode string in \"%V\" function",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -5111,45 +4924,7 @@ ngx_stream_var_exec_base64_decode(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_base64url_decode(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val, dst;
-
-    args = rule->args->elts;
-
-    if (ngx_stream_complex_value(s, &args[0], &val) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    if (val.len == 0) {
-        v->len = 0;
-        v->data = (u_char *) "";
-        return NGX_OK;
-    }
-
-    dst.len = ngx_base64_decoded_length(val.len);
-    dst.data = ngx_pnalloc(s->connection->pool, dst.len);
-    if (dst.data == NULL) {
-        return NGX_ERROR;
-    }
-
-    if (ngx_decode_base64url(&dst, &val) != NGX_OK) {
-        ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: failed to decode base64url string");
-        return NGX_ERROR;
-    }
-
-    v->len = dst.len;
-    v->data = dst.data;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_stream_var_exec_crc32(ngx_stream_session_t *s,
+ngx_stream_var_crc32_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -5183,7 +4958,7 @@ ngx_stream_var_exec_crc32(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_md5(ngx_stream_session_t *s,
+ngx_stream_var_md5_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -5214,7 +4989,7 @@ ngx_stream_var_exec_md5(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_sha1(ngx_stream_session_t *s,
+ngx_stream_var_sha1_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -5244,92 +5019,89 @@ ngx_stream_var_exec_sha1(ngx_stream_session_t *s,
 }
 
 
-#if (NGX_STREAM_SSL)
+#if (NGX_OPENSSL)
 
 static ngx_int_t
-ngx_stream_var_exec_sha224(ngx_stream_session_t *s,
+ngx_stream_var_sha_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
-    return ngx_stream_var_utils_sha(s, v, rule, EVP_sha224(), 28);
+    const EVP_MD  *evp_md;
+    size_t         hash_len;
+
+    switch (rule->func->type) {
+
+    case NGX_STREAM_VAR_FUNC_SHA224:
+        evp_md = EVP_sha224();
+        hash_len = 28;
+        break;
+
+    case NGX_STREAM_VAR_FUNC_SHA256:
+        evp_md = EVP_sha256();
+        hash_len = 32;
+        break;
+
+    case NGX_STREAM_VAR_FUNC_SHA384:
+        evp_md = EVP_sha384();
+        hash_len = 48;
+        break;
+
+    case NGX_STREAM_VAR_FUNC_SHA512:
+        evp_md = EVP_sha512();
+        hash_len = 64;
+        break;
+
+    default:
+        return NGX_ERROR;
+    }
+
+    return ngx_stream_var_helper_sha(s, v, rule, evp_md, hash_len);
 }
 
 
 static ngx_int_t
-ngx_stream_var_exec_sha256(ngx_stream_session_t *s,
+ngx_stream_var_hmac_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
-    return ngx_stream_var_utils_sha(s, v, rule, EVP_sha256(), 32);
-}
+    const EVP_MD  *evp_md;
 
+    switch (rule->func->type) {
 
-static ngx_int_t
-ngx_stream_var_exec_sha384(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    return ngx_stream_var_utils_sha(s, v, rule, EVP_sha384(), 48);
-}
+    case NGX_STREAM_VAR_FUNC_HMAC_MD5:
+        evp_md = EVP_md5();
+        break;
 
+    case NGX_STREAM_VAR_FUNC_HMAC_SHA1:
+        evp_md = EVP_sha1();
+        break;
 
-static ngx_int_t
-ngx_stream_var_exec_sha512(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    return ngx_stream_var_utils_sha(s, v, rule, EVP_sha512(), 64);
-}
+    case NGX_STREAM_VAR_FUNC_HMAC_SHA224:
+        evp_md = EVP_sha224();
+        break;
 
+    case NGX_STREAM_VAR_FUNC_HMAC_SHA256:
+        evp_md = EVP_sha256();
+        break;
 
-static ngx_int_t
-ngx_stream_var_exec_hmac_md5(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    return ngx_stream_var_utils_hmac(s, v, rule, EVP_md5());
-}
+    case NGX_STREAM_VAR_FUNC_HMAC_SHA384:
+        evp_md = EVP_sha384();
+        break;
 
+    case NGX_STREAM_VAR_FUNC_HMAC_SHA512:
+        evp_md = EVP_sha512();
+        break;
 
-static ngx_int_t
-ngx_stream_var_exec_hmac_sha1(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    return ngx_stream_var_utils_hmac(s, v, rule, EVP_sha1());
-}
+    default:
+        return NGX_ERROR;
+    }
 
-
-static ngx_int_t
-ngx_stream_var_exec_hmac_sha224(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    return ngx_stream_var_utils_hmac(s, v, rule, EVP_sha224());
-}
-
-
-static ngx_int_t
-ngx_stream_var_exec_hmac_sha256(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    return ngx_stream_var_utils_hmac(s, v, rule, EVP_sha256());
-}
-
-
-static ngx_int_t
-ngx_stream_var_exec_hmac_sha384(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    return ngx_stream_var_utils_hmac(s, v, rule, EVP_sha384());
-}
-
-
-static ngx_int_t
-ngx_stream_var_exec_hmac_sha512(ngx_stream_session_t *s,
-    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
-{
-    return ngx_stream_var_utils_hmac(s, v, rule, EVP_sha512());
+    return ngx_stream_var_helper_hmac(s, v, rule, evp_md);
 }
 
 #endif
 
 
 static ngx_int_t
-ngx_stream_var_exec_gmt_time(ngx_stream_session_t *s,
+ngx_stream_var_gmt_time_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -5436,7 +5208,7 @@ ngx_stream_var_exec_gmt_time(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_local_time(ngx_stream_session_t *s,
+ngx_stream_var_local_time_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -5517,7 +5289,7 @@ ngx_stream_var_exec_local_time(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_exec_unix_time(ngx_stream_session_t *s,
+ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
@@ -5640,7 +5412,7 @@ set_unix_time:
 
 
 static ngx_int_t
-ngx_stream_var_exec_cidr(ngx_stream_session_t *s,
+ngx_stream_var_cidr_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
