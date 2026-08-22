@@ -320,10 +320,10 @@ var $new_var hex_encode src_str;
 var $new_var hex_decode src_str;
 
 # Decimal to hexadecimal
-var $new_var dec_to_hex dec;
+var $new_var itohex int;
 
 # Hexadecimal to decimal
-var $new_var hex_to_dec hex;
+var $new_var hextoi hex;
 
 # Full URI encoding
 var $new_var escape_uri src_str;

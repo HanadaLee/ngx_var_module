@@ -83,8 +83,8 @@ typedef enum {
 
     NGX_STREAM_VAR_FUNC_HEX_ENCODE,
     NGX_STREAM_VAR_FUNC_HEX_DECODE,
-    NGX_STREAM_VAR_FUNC_DEC_TO_HEX,
-    NGX_STREAM_VAR_FUNC_HEX_TO_DEC,
+    NGX_STREAM_VAR_FUNC_ITOHEX,
+    NGX_STREAM_VAR_FUNC_HEXTOI,
     NGX_STREAM_VAR_FUNC_ESCAPE_URI,
     NGX_STREAM_VAR_FUNC_ESCAPE_ARGS,
     NGX_STREAM_VAR_FUNC_ESCAPE_URI_COMPONENT,
@@ -264,7 +264,6 @@ static ngx_int_t ngx_stream_var_regex_sub_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 #endif
 
-
 static ngx_int_t ngx_stream_var_abs_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 static ngx_int_t ngx_stream_var_minmax_handler(ngx_stream_session_t *s,
@@ -288,9 +287,9 @@ static ngx_int_t ngx_stream_var_hex_encode_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 static ngx_int_t ngx_stream_var_hex_decode_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_dec_to_hex_handler(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_itohex_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
-static ngx_int_t ngx_stream_var_hex_to_dec_handler(ngx_stream_session_t *s,
+static ngx_int_t ngx_stream_var_hextoi_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 static ngx_int_t ngx_stream_var_escape_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
@@ -541,14 +540,14 @@ static ngx_stream_var_func_t  ngx_stream_var_funcs[] = {
       NGX_STREAM_VAR_FUNC_HEX_DECODE,
       1, 1 },
 
-    { ngx_string("dec_to_hex"),
-      ngx_stream_var_dec_to_hex_handler,
-      NGX_STREAM_VAR_FUNC_DEC_TO_HEX,
+    { ngx_string("itohex"),
+      ngx_stream_var_itohex_handler,
+      NGX_STREAM_VAR_FUNC_ITOHEX,
       1, 1 },
 
-    { ngx_string("hex_to_dec"),
-      ngx_stream_var_hex_to_dec_handler,
-      NGX_STREAM_VAR_FUNC_HEX_TO_DEC,
+    { ngx_string("hextoi"),
+      ngx_stream_var_hextoi_handler,
+      NGX_STREAM_VAR_FUNC_HEXTOI,
       1, 1 },
 
     { ngx_string("escape_uri"),
@@ -2165,7 +2164,7 @@ ngx_stream_var_trim_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val, str;
+    ngx_str_t                    val, trim;
     u_char                      *start, *end;
     ngx_uint_t                   trim_left, trim_right;
 
@@ -2207,24 +2206,24 @@ ngx_stream_var_trim_handler(ngx_stream_session_t *s,
 
     if (rule->args->nelts == 2) {
 
-        if (ngx_stream_complex_value(s, &args[1], &str) != NGX_OK) {
+        if (ngx_stream_complex_value(s, &args[1], &trim) != NGX_OK) {
             return NGX_ERROR;
         }
 
-        if (str.len != 1) {
+        if (trim.len != 1) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: invalid trim char");
             return NGX_ERROR;
         }
 
         if (trim_left) {
-            while (start <= end && *start == str.data[0]) {
+            while (start <= end && *start == trim.data[0]) {
                 start++;
             }
         }
 
         if (trim_right) {
-            while (end >= start && *end == str.data[0]) {
+            while (end >= start && *end == trim.data[0]) {
                 end--;
             }
         }
@@ -2294,38 +2293,38 @@ ngx_stream_var_position_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val, sub;
+    ngx_str_t                    val, needle;
     u_char                      *p, *found;
     ngx_int_t                    pos;
 
     args = rule->args->elts;
 
     if (ngx_stream_complex_value(s, &args[0], &val) != NGX_OK
-        || ngx_stream_complex_value(s, &args[1], &sub) != NGX_OK)
+        || ngx_stream_complex_value(s, &args[1], &needle) != NGX_OK)
     {
         return NGX_ERROR;
     }
 
     /* Empty substring is found at position 1 */
-    if (sub.len == 0) {
+    if (needle.len == 0) {
         pos = 1;
-        goto covert_pos;
+        goto format_position;
     }
 
     /* Non-empty substring not found in empty string */
-    if (val.len == 0 || sub.len > val.len) {
+    if (val.len == 0 || needle.len > val.len) {
         pos = 0;
-        goto covert_pos;
+        goto format_position;
     }
 
     /* Search for substring */
     if (rule->ignore_case) {
         found = ngx_strlcasestrn(val.data, val.data + val.len,
-                                 sub.data, sub.len - 1);
+                                 needle.data, needle.len - 1);
 
     } else {
         found = ngx_stream_var_helper_strlstrn(val.data, val.data + val.len,
-                                              sub.data, sub.len - 1);
+                                              needle.data, needle.len - 1);
     }
 
     if (found != NULL) {
@@ -2335,7 +2334,7 @@ ngx_stream_var_position_handler(ngx_stream_session_t *s,
         pos = 0;
     }
 
-covert_pos:
+format_position:
 
     p = ngx_pnalloc(s->connection->pool, NGX_INT_T_LEN);
     if (p == NULL) {
@@ -2354,42 +2353,42 @@ ngx_stream_var_repeat_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val, str;
-    ngx_int_t                    times;
+    ngx_str_t                    val, count;
+    ngx_int_t                    n;
     u_char                      *p;
     ngx_uint_t                   i;
 
     args = rule->args->elts;
 
     if (ngx_stream_complex_value(s, &args[0], &val) != NGX_OK
-        || ngx_stream_complex_value(s, &args[1], &str) != NGX_OK)
+        || ngx_stream_complex_value(s, &args[1], &count) != NGX_OK)
     {
         return NGX_ERROR;
     }
 
-    times = ngx_atoi(str.data, str.len);
-    if (times == NGX_ERROR) {
+    n = ngx_atoi(count.data, count.len);
+    if (n == NGX_ERROR) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid repeat times \"%V\"", &str);
+                      "var: invalid repeat times \"%V\"", &count);
         return NGX_ERROR;
     }
 
-    if (times == 0 || val.len == 0) {
+    if (n == 0 || val.len == 0) {
         v->len = 0;
         v->data = (u_char *) "";
         return NGX_OK;
     }
 
-    p = ngx_pnalloc(s->connection->pool, val.len * times);
+    p = ngx_pnalloc(s->connection->pool, val.len * n);
     if (p == NULL) {
         return NGX_ERROR;
     }
 
-    for (i = 0; i < (ngx_uint_t) times; i++) {
+    for (i = 0; i < (ngx_uint_t) n; i++) {
         ngx_memcpy(p + i * val.len, val.data, val.len);
     }
 
-    v->len = val.len * (ngx_uint_t) times;
+    v->len = val.len * (ngx_uint_t) n;
     v->data = p;
 
     return NGX_OK;
@@ -2401,21 +2400,21 @@ ngx_stream_var_substr_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val, val_start, val_len;
+    ngx_str_t                    val, start_arg, length_arg;
     ngx_int_t                    start, len;
 
     args = rule->args->elts;
 
     if (ngx_stream_complex_value(s, &args[0], &val) != NGX_OK
-        || ngx_stream_complex_value(s, &args[1], &val_start) != NGX_OK)
+        || ngx_stream_complex_value(s, &args[1], &start_arg) != NGX_OK)
     {
         return NGX_ERROR;
     }
 
-    start = ngx_atoi(val_start.data, val_start.len);
+    start = ngx_atoi(start_arg.data, start_arg.len);
     if (start == NGX_ERROR) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid start \"%V\" in substr", &val_start);
+                      "var: invalid start \"%V\" in substr", &start_arg);
         return NGX_ERROR;
     }
 
@@ -2426,13 +2425,13 @@ ngx_stream_var_substr_handler(ngx_stream_session_t *s,
     }
 
     if (rule->args->nelts == 3
-        && ngx_stream_complex_value(s, &args[2], &val_len) == NGX_OK)
+        && ngx_stream_complex_value(s, &args[2], &length_arg) == NGX_OK)
     {
-        len = ngx_atoi(val_len.data, val_len.len);
+        len = ngx_atoi(length_arg.data, length_arg.len);
         if (len == NGX_ERROR) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: invalid length \"%V\" in substr",
-                          &val_len);
+                          &length_arg);
             return NGX_ERROR;
         }
 
@@ -2458,7 +2457,7 @@ ngx_stream_var_replace_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val, val_search, val_replace;
+    ngx_str_t                    val, search, replacement;
     u_char                      *p, *q;
     size_t                       count, new_len;
     ngx_uint_t                   i;
@@ -2467,13 +2466,13 @@ ngx_stream_var_replace_handler(ngx_stream_session_t *s,
     args = rule->args->elts;
 
     if (ngx_stream_complex_value(s, &args[0], &val) != NGX_OK
-        || ngx_stream_complex_value(s, &args[1], &val_search) != NGX_OK
-        || ngx_stream_complex_value(s, &args[2], &val_replace) != NGX_OK)
+        || ngx_stream_complex_value(s, &args[1], &search) != NGX_OK
+        || ngx_stream_complex_value(s, &args[2], &replacement) != NGX_OK)
     {
         return NGX_ERROR;
     }
 
-    if (val_search.len == 0) {
+    if (search.len == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: search string is empty in replace");
         return NGX_ERROR;
@@ -2483,18 +2482,18 @@ ngx_stream_var_replace_handler(ngx_stream_session_t *s,
     count = 0;
     p = val.data;
 
-    for (i = 0; i <= val.len - val_search.len; /* void */ ) {
+    for (i = 0; i <= val.len - search.len; /* void */ ) {
 
         if (rule->ignore_case) {
-            rc = ngx_strncasecmp(p + i, val_search.data, val_search.len);
+            rc = ngx_strncasecmp(p + i, search.data, search.len);
 
         } else {
-            rc = ngx_strncmp(p + i, val_search.data, val_search.len);
+            rc = ngx_strncmp(p + i, search.data, search.len);
         }
 
         if (rc == 0) {
             count++;
-            i += val_search.len;
+            i += search.len;
 
         } else {
             i++;
@@ -2509,7 +2508,7 @@ ngx_stream_var_replace_handler(ngx_stream_session_t *s,
     }
 
     /* calculate new length */
-    new_len = val.len + count * (val_replace.len - val_search.len);
+    new_len = val.len + count * (replacement.len - search.len);
 
     if (new_len > NGX_MAX_SIZE_T_VALUE) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
@@ -2528,21 +2527,19 @@ ngx_stream_var_replace_handler(ngx_stream_session_t *s,
 
     while (i < val.len) {
 
-        if (i <= val.len - val_search.len) {
+        if (i <= val.len - search.len) {
 
             if (rule->ignore_case) {
-                rc = ngx_strncasecmp(val.data + i, val_search.data,
-                                     val_search.len);
+                rc = ngx_strncasecmp(val.data + i, search.data, search.len);
 
             } else {
-                rc = ngx_strncmp(val.data + i, val_search.data,
-                                 val_search.len);
+                rc = ngx_strncmp(val.data + i, search.data, search.len);
             }
 
             if (rc == 0) {
-                ngx_memcpy(q, val_replace.data, val_replace.len);
-                q += val_replace.len;
-                i += val_search.len;
+                ngx_memcpy(q, replacement.data, replacement.len);
+                q += replacement.len;
+                i += search.len;
                 continue;
             }
         }
@@ -2563,7 +2560,8 @@ ngx_stream_var_extract_param_handler(ngx_stream_session_t *s,
 {
     ngx_stream_complex_value_t  *args;
     ngx_str_t                    name, val, separator, delimiter;
-    u_char                      *p, *back, *last, sep, del;
+    u_char                      *p, *boundary, *last;
+    u_char                       separator_char, delimiter_char;
 
     args = rule->args->elts;
 
@@ -2627,8 +2625,8 @@ ngx_stream_var_extract_param_handler(ngx_stream_session_t *s,
         return NGX_OK;
     }
 
-    sep = separator.data[0];
-    del = delimiter.data[0];
+    separator_char = separator.data[0];
+    delimiter_char = delimiter.data[0];
 
     p = val.data;
     last = p + val.len;
@@ -2650,28 +2648,28 @@ ngx_stream_var_extract_param_handler(ngx_stream_session_t *s,
             return NGX_OK;
         }
 
-        if (*(p + name.len) != del) {
+        if (*(p + name.len) != delimiter_char) {
             continue;
         }
 
         if (p > val.data) {
-            back = p - 1;
+            boundary = p - 1;
 
-            while (back > val.data && *back == ' ') {
-                back--;
+            while (boundary > val.data && *boundary == ' ') {
+                boundary--;
             }
 
-            if (*back != sep) {
+            if (*boundary != separator_char) {
                 continue;
             }
         }
 
         p += name.len + 1;
 
-        back = ngx_strlchr(p, last, sep);
+        boundary = ngx_strlchr(p, last, separator_char);
 
-        if (back) {
-            last = back;
+        if (boundary) {
+            last = boundary;
         }
 
         while (p < last && *p == ' ') {
@@ -2717,12 +2715,12 @@ ngx_stream_var_extract_json_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val, subkey;
+    ngx_str_t                    val, path;
     cJSON                       *json, *current;
     u_char                      *json_data, *key, *result;
     ngx_uint_t                   i;
     ngx_int_t                    index;
-    char                        *str;
+    char                        *text;
 
     args = rule->args->elts;
 
@@ -2763,26 +2761,26 @@ ngx_stream_var_extract_json_handler(ngx_stream_session_t *s,
 
     for (i = 1; i < rule->args->nelts; i++) {
 
-        if (ngx_stream_complex_value(s, &args[i], &subkey) != NGX_OK) {
+        if (ngx_stream_complex_value(s, &args[i], &path) != NGX_OK) {
             goto failed;
         }
 
-        while (subkey.len && ngx_stream_var_isspace(subkey.data[0])) {
-            subkey.data++;
-            subkey.len--;
+        while (path.len && ngx_stream_var_isspace(path.data[0])) {
+            path.data++;
+            path.len--;
         }
 
-        while (subkey.len
-               && ngx_stream_var_isspace(subkey.data[subkey.len - 1]))
+        while (path.len
+               && ngx_stream_var_isspace(path.data[path.len - 1]))
         {
-            subkey.len--;
+            path.len--;
         }
 
         /* check if it's an array index like [0] or [1] */
-        if (subkey.len >= 3 && subkey.data[0] == '['
-            && subkey.data[subkey.len - 1] == ']')
+        if (path.len >= 3 && path.data[0] == '['
+            && path.data[path.len - 1] == ']')
         {
-            index = ngx_atoi(subkey.data + 1, subkey.len - 2);
+            index = ngx_atoi(path.data + 1, path.len - 2);
 
             if (index == NGX_ERROR) {
                 goto failed;
@@ -2805,13 +2803,13 @@ ngx_stream_var_extract_json_handler(ngx_stream_session_t *s,
                 goto not_found;
             }
 
-            key = ngx_pnalloc(s->connection->pool, subkey.len + 1);
+            key = ngx_pnalloc(s->connection->pool, path.len + 1);
             if (key == NULL) {
                 goto failed;
             }
 
-            ngx_memcpy(key, subkey.data, subkey.len);
-            key[subkey.len] = '\0';
+            ngx_memcpy(key, path.data, path.len);
+            key[path.len] = '\0';
 
             current = cJSON_GetObjectItem(current, (char *) key);
             if (current == NULL) {
@@ -2822,18 +2820,18 @@ ngx_stream_var_extract_json_handler(ngx_stream_session_t *s,
 
     /* extract the value based on type */
     if (cJSON_IsString(current)) {
-        str = cJSON_GetStringValue(current);
-        if (str == NULL) {
+        text = cJSON_GetStringValue(current);
+        if (text == NULL) {
             goto not_found;
         }
 
-        v->len = ngx_strlen(str);
+        v->len = ngx_strlen(text);
         result = ngx_pnalloc(s->connection->pool, v->len);
         if (result == NULL) {
             goto failed;
         }
 
-        ngx_memcpy(result, str, v->len);
+        ngx_memcpy(result, text, v->len);
         v->data = result;
 
     } else if (cJSON_IsBool(current)) {
@@ -2857,23 +2855,23 @@ ngx_stream_var_extract_json_handler(ngx_stream_session_t *s,
     } else {
 
         /* for numbers, arrays, and objects */
-        str = cJSON_PrintUnformatted(current);
-        if (str == NULL) {
+        text = cJSON_PrintUnformatted(current);
+        if (text == NULL) {
             goto failed;
         }
 
-        v->len = ngx_strlen(str);
+        v->len = ngx_strlen(text);
 
         result = ngx_pnalloc(s->connection->pool, v->len);
         if (result == NULL) {
-            cJSON_free(str);
+            cJSON_free(text);
             goto failed;
         }
 
-        ngx_memcpy(result, str, v->len);
+        ngx_memcpy(result, text, v->len);
         v->data = result;
 
-        cJSON_free(str);
+        cJSON_free(text);
     }
 
     cJSON_Delete(json);
@@ -2908,7 +2906,7 @@ ngx_stream_var_regex_capture_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t    *args;
-    ngx_str_t                      val, assign_val;
+    ngx_str_t                      val, assignment;
     ngx_int_t                      rc;
 
     args = rule->args->elts;
@@ -2931,12 +2929,12 @@ ngx_stream_var_regex_capture_handler(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_complex_value(s, &args[1], &assign_val) != NGX_OK) {
+    if (ngx_stream_complex_value(s, &args[1], &assignment) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    v->len = assign_val.len;
-    v->data = assign_val.data;
+    v->len = assignment.len;
+    v->data = assignment.data;
 
     return NGX_OK;
 }
@@ -3041,18 +3039,18 @@ ngx_stream_var_minmax_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val1, val2, *result;
-    ngx_int_t                    fp_val1, fp_val2;
+    ngx_str_t                    a, b, *result;
+    ngx_int_t                    fp_a, fp_b;
 
     args = rule->args->elts;
 
-    if (ngx_stream_complex_value(s, &args[0], &val1) != NGX_OK
-        || ngx_stream_complex_value(s, &args[1], &val2) != NGX_OK)
+    if (ngx_stream_complex_value(s, &args[0], &a) != NGX_OK
+        || ngx_stream_complex_value(s, &args[1], &b) != NGX_OK)
     {
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_helper_auto_atofp(val1, val2, &fp_val1, &fp_val2)
+    if (ngx_stream_var_helper_auto_atofp(a, b, &fp_a, &fp_b)
         != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
@@ -3062,10 +3060,10 @@ ngx_stream_var_minmax_handler(ngx_stream_session_t *s,
     }
 
     if (rule->func->type == NGX_STREAM_VAR_FUNC_MAX) {
-        result = (fp_val1 >= fp_val2) ? &val1 : &val2;
+        result = (fp_a >= fp_b) ? &a : &b;
 
     } else {
-        result = (fp_val1 <= fp_val2) ? &val1 : &val2;
+        result = (fp_a <= fp_b) ? &a : &b;
     }
 
     v->len = result->len;
@@ -3080,20 +3078,20 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val1, val2;
-    ngx_int_t                    int_val1, int_val2, result;
+    ngx_str_t                    left, right;
+    ngx_int_t                    a, b, n;
     u_char                      *p;
 
     args = rule->args->elts;
 
-    if (ngx_stream_complex_value(s, &args[0], &val1) != NGX_OK
-        || ngx_stream_complex_value(s, &args[1], &val2) != NGX_OK)
+    if (ngx_stream_complex_value(s, &args[0], &left) != NGX_OK
+        || ngx_stream_complex_value(s, &args[1], &right) != NGX_OK)
     {
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_stream_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
+    if (ngx_stream_var_helper_auto_atoi(left, &a) != NGX_OK
+        || ngx_stream_var_helper_auto_atoi(right, &b) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value for \"%V\" function",
@@ -3104,15 +3102,15 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
     switch (rule->func->type) {
 
     case NGX_STREAM_VAR_FUNC_ADD:
-        if (int_val2 > 0 && int_val1 > NGX_MAX_INT_T_VALUE - int_val2) {
+        if (b > 0 && a > NGX_MAX_INT_T_VALUE - b) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: integer overflow in \"%V\" function",
                           &rule->func->name);
             return NGX_ERROR;
         }
 
-        if (int_val2 < 0
-            && int_val1 < -NGX_MAX_INT_T_VALUE - int_val2)
+        if (b < 0
+            && a < -NGX_MAX_INT_T_VALUE - b)
         {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: integer underflow in \"%V\" function",
@@ -3120,19 +3118,19 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
             return NGX_ERROR;
         }
 
-        result = int_val1 + int_val2;
+        n = a + b;
         break;
 
     case NGX_STREAM_VAR_FUNC_SUB:
-        if (int_val2 < 0 && int_val1 > NGX_MAX_INT_T_VALUE + int_val2) {
+        if (b < 0 && a > NGX_MAX_INT_T_VALUE + b) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: integer overflow in \"%V\" function",
                           &rule->func->name);
             return NGX_ERROR;
         }
 
-        if (int_val2 > 0
-            && int_val1 < -NGX_MAX_INT_T_VALUE + int_val2)
+        if (b > 0
+            && a < -NGX_MAX_INT_T_VALUE + b)
         {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: integer underflow in \"%V\" function",
@@ -3140,14 +3138,14 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
             return NGX_ERROR;
         }
 
-        result = int_val1 - int_val2;
+        n = a - b;
         break;
 
     case NGX_STREAM_VAR_FUNC_MUL:
-        if (int_val1 > 0) {
+        if (a > 0) {
 
-            if (int_val2 > 0
-                && int_val1 > NGX_MAX_INT_T_VALUE / int_val2)
+            if (b > 0
+                && a > NGX_MAX_INT_T_VALUE / b)
             {
                 ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                               "var: integer overflow in \"%V\" function",
@@ -3155,8 +3153,8 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
                 return NGX_ERROR;
             }
 
-            if (int_val2 < 0
-                && int_val2 < -NGX_MAX_INT_T_VALUE / int_val1)
+            if (b < 0
+                && b < -NGX_MAX_INT_T_VALUE / a)
             {
                 ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                               "var: integer underflow in \"%V\" function",
@@ -3164,10 +3162,10 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
                 return NGX_ERROR;
             }
 
-        } else if (int_val1 < 0) {
+        } else if (a < 0) {
 
-            if (int_val2 > 0
-                && int_val1 < -NGX_MAX_INT_T_VALUE / int_val2)
+            if (b > 0
+                && a < -NGX_MAX_INT_T_VALUE / b)
             {
                 ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                               "var: integer underflow in \"%V\" function",
@@ -3175,8 +3173,8 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
                 return NGX_ERROR;
             }
 
-            if (int_val2 < 0
-                && int_val1 < NGX_MAX_INT_T_VALUE / int_val2)
+            if (b < 0
+                && a < NGX_MAX_INT_T_VALUE / b)
             {
                 ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                               "var: integer overflow in \"%V\" function",
@@ -3185,29 +3183,29 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
             }
         }
 
-        result = int_val1 * int_val2;
+        n = a * b;
         break;
 
     case NGX_STREAM_VAR_FUNC_DIV:
-        if (int_val2 == 0) {
+        if (b == 0) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: division by zero in \"%V\" function",
                           &rule->func->name);
             return NGX_ERROR;
         }
 
-        result = int_val1 / int_val2;
+        n = a / b;
         break;
 
     case NGX_STREAM_VAR_FUNC_MOD:
-        if (int_val2 == 0) {
+        if (b == 0) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: modulo by zero in \"%V\" function",
                           &rule->func->name);
             return NGX_ERROR;
         }
 
-        result = int_val1 % int_val2;
+        n = a % b;
         break;
 
     default:
@@ -3219,7 +3217,7 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    v->len = ngx_sprintf(p, "%i", result) - p;
+    v->len = ngx_sprintf(p, "%i", n) - p;
     v->data = p;
 
     return NGX_OK;
@@ -3231,20 +3229,20 @@ ngx_stream_var_bitwise_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val1, val2;
-    ngx_int_t                    int_val1, int_val2, result;
+    ngx_str_t                    left, right;
+    ngx_int_t                    a, b, n;
     u_char                      *p;
 
     args = rule->args->elts;
 
-    if (ngx_stream_complex_value(s, &args[0], &val1) != NGX_OK
-        || ngx_stream_complex_value(s, &args[1], &val2) != NGX_OK)
+    if (ngx_stream_complex_value(s, &args[0], &left) != NGX_OK
+        || ngx_stream_complex_value(s, &args[1], &right) != NGX_OK)
     {
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_stream_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
+    if (ngx_stream_var_helper_auto_atoi(left, &a) != NGX_OK
+        || ngx_stream_var_helper_auto_atoi(right, &b) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value");
@@ -3254,15 +3252,15 @@ ngx_stream_var_bitwise_handler(ngx_stream_session_t *s,
     switch (rule->func->type) {
 
     case NGX_STREAM_VAR_FUNC_BITWISE_AND:
-        result = int_val1 & int_val2;
+        n = a & b;
         break;
 
     case NGX_STREAM_VAR_FUNC_BITWISE_OR:
-        result = int_val1 | int_val2;
+        n = a | b;
         break;
 
     case NGX_STREAM_VAR_FUNC_BITWISE_XOR:
-        result = int_val1 ^ int_val2;
+        n = a ^ b;
         break;
 
     default:
@@ -3274,7 +3272,7 @@ ngx_stream_var_bitwise_handler(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    v->len = ngx_sprintf(p, "%i", result) - p;
+    v->len = ngx_sprintf(p, "%i", n) - p;
     v->data = p;
 
     return NGX_OK;
@@ -3287,7 +3285,7 @@ ngx_stream_var_bitwise_not_handler(ngx_stream_session_t *s,
 {
     ngx_stream_complex_value_t  *args;
     ngx_str_t                    val;
-    ngx_int_t                    int_val, result;
+    ngx_int_t                    n;
     u_char                      *p;
 
     args = rule->args->elts;
@@ -3296,20 +3294,18 @@ ngx_stream_var_bitwise_not_handler(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_helper_auto_atoi(val, &int_val) != NGX_OK) {
+    if (ngx_stream_var_helper_auto_atoi(val, &n) != NGX_OK) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value");
         return NGX_ERROR;
     }
-
-    result = ~int_val;
 
     p = ngx_pnalloc(s->connection->pool, NGX_INT_T_LEN);
     if (p == NULL) {
         return NGX_ERROR;
     }
 
-    v->len = ngx_sprintf(p, "%i", result) - p;
+    v->len = ngx_sprintf(p, "%i", ~n) - p;
     v->data = p;
 
     return NGX_OK;
@@ -3321,32 +3317,32 @@ ngx_stream_var_shift_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val1, val2;
-    ngx_int_t                    int_val, shift_bits;
+    ngx_str_t                    val, shift;
+    ngx_int_t                    n, bits;
     u_char                      *p;
 
     args = rule->args->elts;
 
-    if (ngx_stream_complex_value(s, &args[0], &val1) != NGX_OK
-        || ngx_stream_complex_value(s, &args[1], &val2) != NGX_OK)
+    if (ngx_stream_complex_value(s, &args[0], &val) != NGX_OK
+        || ngx_stream_complex_value(s, &args[1], &shift) != NGX_OK)
     {
         return NGX_ERROR;
     }
 
-    if (ngx_stream_var_helper_auto_atoi(val1, &int_val) != NGX_OK) {
+    if (ngx_stream_var_helper_auto_atoi(val, &n) != NGX_OK) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid integer value");
         return NGX_ERROR;
     }
 
-    shift_bits = ngx_atoi(val2.data, val2.len);
-    if (shift_bits == NGX_ERROR) {
+    bits = ngx_atoi(shift.data, shift.len);
+    if (bits == NGX_ERROR) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid shift bits");
         return NGX_ERROR;
     }
 
-    if (shift_bits >= (ngx_int_t) (sizeof(ngx_int_t) * 8)) {
+    if (bits >= (ngx_int_t) (sizeof(ngx_int_t) * 8)) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: shift bits too large");
         return NGX_ERROR;
@@ -3360,16 +3356,16 @@ ngx_stream_var_shift_handler(ngx_stream_session_t *s,
     switch (rule->func->type) {
 
     case NGX_STREAM_VAR_FUNC_LSHIFT:
-        v->len = ngx_sprintf(p, "%i", int_val << shift_bits) - p;
+        v->len = ngx_sprintf(p, "%i", n << bits) - p;
         break;
 
     case NGX_STREAM_VAR_FUNC_RSHIFT:
-        v->len = ngx_sprintf(p, "%i", int_val >> shift_bits) - p;
+        v->len = ngx_sprintf(p, "%i", n >> bits) - p;
         break;
 
     case NGX_STREAM_VAR_FUNC_URSHIFT:
         v->len = ngx_sprintf(p, "%ui",
-                             (ngx_uint_t) int_val >> shift_bits)
+                             (ngx_uint_t) n >> bits)
                  - p;
         break;
 
@@ -3388,12 +3384,12 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val, val_precision;
+    ngx_str_t                    val, precision_arg;
     ngx_int_t                    precision, i, decimal_point;
     ngx_uint_t                   is_negative, fraction_is_zero;
-    u_char                      *num_data, *result, *p;
-    size_t                       num_len, int_len, frac_len;
-    u_char                      *int_part, *frac_part;
+    u_char                      *number, *result, *p;
+    size_t                       number_len, integer_len, fraction_len;
+    u_char                      *integer, *fraction;
 
     args = rule->args->elts;
 
@@ -3405,11 +3401,11 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
 
     if (rule->func->type == NGX_STREAM_VAR_FUNC_ROUND) {
 
-        if (ngx_stream_complex_value(s, &args[1], &val_precision) != NGX_OK) {
+        if (ngx_stream_complex_value(s, &args[1], &precision_arg) != NGX_OK) {
             return NGX_ERROR;
         }
 
-        precision = ngx_atoi(val_precision.data, val_precision.len);
+        precision = ngx_atoi(precision_arg.data, precision_arg.len);
         if (precision == NGX_ERROR || precision < 0) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: invalid precision value for "
@@ -3418,10 +3414,10 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
         }
     }
 
-    num_data = val.data;
-    num_len = val.len;
+    number = val.data;
+    number_len = val.len;
 
-    if (num_len == 0) {
+    if (number_len == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: empty input for \"%V\" function",
                       &rule->func->name);
@@ -3430,13 +3426,13 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
 
     is_negative = 0;
 
-    if (num_data[0] == '-') {
+    if (number[0] == '-') {
         is_negative = 1;
-        num_data++;
-        num_len--;
+        number++;
+        number_len--;
     }
 
-    if (num_len == 0 || num_data[0] == '.') {
+    if (number_len == 0 || number[0] == '.') {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: invalid number format");
         return NGX_ERROR;
@@ -3444,9 +3440,9 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
 
     decimal_point = -1;
 
-    for (i = 0; i < (ngx_int_t) num_len; i++) {
+    for (i = 0; i < (ngx_int_t) number_len; i++) {
 
-        if (num_data[i] == '.') {
+        if (number[i] == '.') {
 
             if (decimal_point != -1) {
                 ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
@@ -3456,7 +3452,7 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
 
             decimal_point = i;
 
-        } else if (num_data[i] < '0' || num_data[i] > '9') {
+        } else if (number[i] < '0' || number[i] > '9') {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: invalid character in number");
             return NGX_ERROR;
@@ -3464,14 +3460,14 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
     }
 
     if (decimal_point == -1) {
-        int_len = num_len;
-        int_part = num_data;
-        frac_len = 0;
-        frac_part = NULL;
+        integer_len = number_len;
+        integer = number;
+        fraction_len = 0;
+        fraction = NULL;
 
     } else {
 
-        if (decimal_point == (ngx_int_t) (num_len - 1)
+        if (decimal_point == (ngx_int_t) (number_len - 1)
             && rule->func->type != NGX_STREAM_VAR_FUNC_TRUNC)
         {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
@@ -3479,10 +3475,10 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
             return NGX_ERROR;
         }
 
-        int_len = decimal_point;
-        int_part = num_data;
-        frac_len = num_len - decimal_point - 1;
-        frac_part = num_data + decimal_point + 1;
+        integer_len = decimal_point;
+        integer = number;
+        fraction_len = number_len - decimal_point - 1;
+        fraction = number + decimal_point + 1;
     }
 
     if (rule->func->type == NGX_STREAM_VAR_FUNC_TRUNC) {
@@ -3493,7 +3489,7 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
 
         } else {
             v->data = val.data;
-            v->len = (is_negative ? 1 : 0) + int_len;
+            v->len = (is_negative ? 1 : 0) + integer_len;
         }
 
         return NGX_OK;
@@ -3501,22 +3497,22 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
 
     if (rule->func->type == NGX_STREAM_VAR_FUNC_ROUND) {
 
-        if (frac_len == (size_t) precision) {
+        if (fraction_len == (size_t) precision) {
             v->data = val.data;
             v->len = val.len;
             return NGX_OK;
         }
 
-        if (frac_len > (size_t) precision && frac_part[precision] < '5') {
+        if (fraction_len > (size_t) precision && fraction[precision] < '5') {
             v->data = val.data;
-            v->len = (is_negative ? 1 : 0) + int_len
+            v->len = (is_negative ? 1 : 0) + integer_len
                      + (precision > 0 ? 1 + precision : 0);
             return NGX_OK;
         }
 
-        if (frac_len < (size_t) precision) {
+        if (fraction_len < (size_t) precision) {
             i = (decimal_point == -1)
-                ? (1 + precision) : (precision - (ngx_int_t) frac_len);
+                ? (1 + precision) : (precision - (ngx_int_t) fraction_len);
 
             result = ngx_palloc(s->connection->pool, val.len + i + 1);
             if (result == NULL) {
@@ -3529,7 +3525,7 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
                 *p++ = '.';
             }
 
-            ngx_memset(p, '0', precision - frac_len);
+            ngx_memset(p, '0', precision - fraction_len);
 
             v->len = val.len + i;
             v->data = result;
@@ -3547,11 +3543,11 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
             *p++ = '-';
         }
 
-        p = ngx_cpymem(p, int_part, int_len);
+        p = ngx_cpymem(p, integer, integer_len);
 
         if (precision > 0) {
             *p++ = '.';
-            p = ngx_cpymem(p, frac_part, precision);
+            p = ngx_cpymem(p, fraction, precision);
         }
 
         i = p - result;
@@ -3596,7 +3592,7 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (frac_len == 0) {
+    if (fraction_len == 0) {
         v->data = val.data;
         v->len = val.len;
         return NGX_OK;
@@ -3604,9 +3600,9 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
 
     fraction_is_zero = 1;
 
-    for (i = 0; i < (ngx_int_t) frac_len; i++) {
+    for (i = 0; i < (ngx_int_t) fraction_len; i++) {
 
-        if (frac_part[i] != '0') {
+        if (fraction[i] != '0') {
             fraction_is_zero = 0;
             break;
         }
@@ -3617,7 +3613,7 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
         || (rule->func->type == NGX_STREAM_VAR_FUNC_CEIL && is_negative))
     {
         v->data = val.data;
-        v->len = (is_negative ? 1 : 0) + int_len;
+        v->len = (is_negative ? 1 : 0) + integer_len;
         return NGX_OK;
     }
 
@@ -3632,7 +3628,7 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
         *p++ = '-';
     }
 
-    p = ngx_cpymem(p, int_part, int_len);
+    p = ngx_cpymem(p, integer, integer_len);
     i = p - result;
     p--;
 
@@ -3670,8 +3666,8 @@ ngx_stream_var_rand_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    str;
-    ngx_int_t                    start, end, result;
+    ngx_str_t                    range;
+    ngx_int_t                    start, end, n;
     ngx_int_t                    rc;
     uint64_t                     random_value;
     u_char                      *p;
@@ -3702,17 +3698,17 @@ ngx_stream_var_rand_handler(ngx_stream_session_t *s,
     args = rule->args->elts;
 
     /* Compute the start and end values */
-    if (ngx_stream_complex_value(s, &args[0], &str) != NGX_OK) {
+    if (ngx_stream_complex_value(s, &args[0], &range) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    if (str.len == 0) {
+    if (range.len == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: empty argument for \"rand\"");
         return NGX_ERROR;
     }
 
-    start = ngx_atoi(str.data, str.len);
+    start = ngx_atoi(range.data, range.len);
 
     if (start == NGX_ERROR) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
@@ -3722,17 +3718,17 @@ ngx_stream_var_rand_handler(ngx_stream_session_t *s,
 
     if (rule->args->nelts == 2) {
 
-        if (ngx_stream_complex_value(s, &args[1], &str) != NGX_OK) {
+        if (ngx_stream_complex_value(s, &args[1], &range) != NGX_OK) {
             return NGX_ERROR;
         }
 
-        if (str.len == 0) {
+        if (range.len == 0) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: empty argument for \"rand\"");
             return NGX_ERROR;
         }
 
-        end = ngx_atoi(str.data, str.len);
+        end = ngx_atoi(range.data, range.len);
 
         if (end == NGX_ERROR || start > end) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
@@ -3764,8 +3760,8 @@ ngx_stream_var_rand_handler(ngx_stream_session_t *s,
     random_value = ngx_random();
 #endif
 
-    result = start
-             + (ngx_int_t) (random_value % ((uint64_t) end - start + 1));
+    n = start
+        + (ngx_int_t) (random_value % ((uint64_t) end - start + 1));
 
     /* Allocate memory for the result string */
     p = ngx_pnalloc(s->connection->pool, NGX_INT_T_LEN);
@@ -3773,7 +3769,7 @@ ngx_stream_var_rand_handler(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    v->len = ngx_sprintf(p, "%i", result) - p;
+    v->len = ngx_sprintf(p, "%i", n) - p;
     v->data = p;
 
     return ngx_stream_var_cache_random(s, v, rule);
@@ -3786,7 +3782,7 @@ ngx_stream_var_hexrand_handler(ngx_stream_session_t *s,
 {
     ngx_stream_complex_value_t  *args;
     u_char                      *p;
-    ngx_str_t                    str;
+    ngx_str_t                    length;
     ngx_int_t                    n;
     ngx_int_t                    rc;
 
@@ -3807,17 +3803,17 @@ ngx_stream_var_hexrand_handler(ngx_stream_session_t *s,
     } else {
         args = rule->args->elts;
 
-        if (ngx_stream_complex_value(s, &args[0], &str) != NGX_OK) {
+        if (ngx_stream_complex_value(s, &args[0], &length) != NGX_OK) {
             return NGX_ERROR;
         }
 
-        if (str.len == 0) {
+        if (length.len == 0) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: empty argument for \"hexrand\"");
             return NGX_ERROR;
         }
 
-        n = ngx_atoi(str.data, str.len);
+        n = ngx_atoi(length.data, length.len);
         if (n == NGX_ERROR || n <= 0 || n > 32) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: invalid length value for \"hexrand\"");
@@ -3901,7 +3897,7 @@ ngx_stream_var_hex_decode_handler(ngx_stream_session_t *s,
     ngx_stream_complex_value_t  *args;
     ngx_str_t                    val;
     u_char                      *p;
-    ngx_int_t                    n;
+    ngx_int_t                    byte;
     size_t                       i;
     size_t                       len;
 
@@ -3926,15 +3922,15 @@ ngx_stream_var_hex_decode_handler(ngx_stream_session_t *s,
     }
 
     for (i = 0; i < len; i++) {
-        n = ngx_hextoi(p, 2);
-        if (n == NGX_ERROR || n > 255) {
+        byte = ngx_hextoi(p, 2);
+        if (byte == NGX_ERROR || byte > 255) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: invalid value in \"hex_decode\"");
             return NGX_ERROR;
         }
 
         p += 2;
-        v->data[i] = (u_char) n;
+        v->data[i] = (u_char) byte;
     }
 
     return NGX_OK;
@@ -3942,12 +3938,12 @@ ngx_stream_var_hex_decode_handler(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_dec_to_hex_handler(ngx_stream_session_t *s,
+ngx_stream_var_itohex_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
     ngx_str_t                    val;
-    ngx_int_t                    dec;
+    ngx_int_t                    n;
     u_char                      *p;
     ngx_flag_t                   is_negative;
 
@@ -3959,7 +3955,7 @@ ngx_stream_var_dec_to_hex_handler(ngx_stream_session_t *s,
 
     if (val.len == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: empty input for \"dec_to_hex\"");
+                      "var: empty input for \"itohex\"");
         return NGX_ERROR;
     }
 
@@ -3970,10 +3966,10 @@ ngx_stream_var_dec_to_hex_handler(ngx_stream_session_t *s,
         val.len--;
     }
 
-    dec = ngx_atoi(val.data, val.len);
-    if (dec == NGX_ERROR) {
+    n = ngx_atoi(val.data, val.len);
+    if (n == NGX_ERROR) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid decimal value for \"dec_to_hex\"");
+                      "var: invalid decimal value for \"itohex\"");
         return NGX_ERROR;
     }
 
@@ -3983,10 +3979,10 @@ ngx_stream_var_dec_to_hex_handler(ngx_stream_session_t *s,
     }
 
     if (is_negative) {
-        v->len = ngx_sprintf(p, "-%xi", dec) - p;
+        v->len = ngx_sprintf(p, "-%xi", n) - p;
 
     } else {
-        v->len = ngx_sprintf(p, "%xi", dec) - p;
+        v->len = ngx_sprintf(p, "%xi", n) - p;
     }
 
     v->data = p;
@@ -3996,12 +3992,12 @@ ngx_stream_var_dec_to_hex_handler(ngx_stream_session_t *s,
 
 
 static ngx_int_t
-ngx_stream_var_hex_to_dec_handler(ngx_stream_session_t *s,
+ngx_stream_var_hextoi_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
     ngx_str_t                    val;
-    ngx_int_t                    dec;
+    ngx_int_t                    n;
     u_char                      *p;
     ngx_flag_t                   is_negative;
 
@@ -4013,7 +4009,7 @@ ngx_stream_var_hex_to_dec_handler(ngx_stream_session_t *s,
 
     if (val.len == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: empty input for \"hex_to_dec\"");
+                      "var: empty input for \"hextoi\"");
         return NGX_ERROR;
     }
 
@@ -4024,10 +4020,10 @@ ngx_stream_var_hex_to_dec_handler(ngx_stream_session_t *s,
         val.len--;
     }
 
-    dec = ngx_hextoi(val.data, val.len);
-    if (dec == NGX_ERROR) {
+    n = ngx_hextoi(val.data, val.len);
+    if (n == NGX_ERROR) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid hex value for \"hex_to_dec\"");
+                      "var: invalid hex value for \"hextoi\"");
         return NGX_ERROR;
     }
 
@@ -4037,10 +4033,10 @@ ngx_stream_var_hex_to_dec_handler(ngx_stream_session_t *s,
     }
 
     if (is_negative) {
-        v->len = ngx_sprintf(p, "-%i", dec) - p;
+        v->len = ngx_sprintf(p, "-%i", n) - p;
 
     } else {
-        v->len = ngx_sprintf(p, "%i", dec) - p;
+        v->len = ngx_sprintf(p, "%i", n) - p;
     }
 
     v->data = p;
@@ -4386,7 +4382,7 @@ ngx_stream_var_gmt_time_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    str;
+    ngx_str_t                    val, format;
     time_t                       ts;
     u_char                      *p;
     struct tm                    tm;
@@ -4397,7 +4393,7 @@ ngx_stream_var_gmt_time_handler(ngx_stream_session_t *s,
 
     if (rule->args->nelts == 1) {
 
-        if (ngx_stream_complex_value(s, &args[0], &str) != NGX_OK) {
+        if (ngx_stream_complex_value(s, &args[0], &format) != NGX_OK) {
             return NGX_ERROR;
         }
 
@@ -4405,23 +4401,25 @@ ngx_stream_var_gmt_time_handler(ngx_stream_session_t *s,
 
     } else {
 
-        if (ngx_stream_complex_value(s, &args[0], &str) != NGX_OK) {
+        if (ngx_stream_complex_value(s, &args[0], &val) != NGX_OK) {
             return NGX_ERROR;
         }
 
-        ts = ngx_atoi(str.data, str.len);
+        ts = ngx_atoi(val.data, val.len);
         if (ts == NGX_ERROR) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: invalid unix_time value");
             return NGX_ERROR;
         }
 
-        if (ngx_stream_complex_value(s, &args[1], &str) != NGX_OK) {
+        if (ngx_stream_complex_value(s, &args[1], &format) != NGX_OK) {
             return NGX_ERROR;
         }
     }
 
-    if (str.len == 9 && ngx_strncmp(str.data, "http_time", 9) == 0) {
+    if (format.len == 9
+        && ngx_strncmp(format.data, "http_time", 9) == 0)
+    {
         p = ngx_pnalloc(s->connection->pool,
                         sizeof("Mon, 28 Sep 1970 06:00:00 GMT") - 1);
         if (p == NULL) {
@@ -4434,7 +4432,9 @@ ngx_stream_var_gmt_time_handler(ngx_stream_session_t *s,
         return NGX_OK;
     }
 
-    if (str.len == 11 && ngx_strncmp(str.data, "cookie_time", 11) == 0) {
+    if (format.len == 11
+        && ngx_strncmp(format.data, "cookie_time", 11) == 0)
+    {
         p = ngx_pnalloc(s->connection->pool,
                         sizeof("Thu, 18-Nov-10 11:27:35 GMT") - 1);
         if (p == NULL) {
@@ -4447,14 +4447,14 @@ ngx_stream_var_gmt_time_handler(ngx_stream_session_t *s,
         return NGX_OK;
     }
 
-    if (str.len >= sizeof(fmt)) {
+    if (format.len >= sizeof(fmt)) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: time format too long");
         return NGX_ERROR;
     }
 
-    if (str.len == sizeof("%s") - 1 && str.data[0] == '%'
-        && str.data[1] == 's')
+    if (format.len == sizeof("%s") - 1 && format.data[0] == '%'
+        && format.data[1] == 's')
     {
         v->data = ngx_pnalloc(s->connection->pool, NGX_TIME_T_LEN);
         if (v->data == NULL) {
@@ -4465,8 +4465,8 @@ ngx_stream_var_gmt_time_handler(ngx_stream_session_t *s,
         return NGX_OK;
     }
 
-    ngx_memcpy(fmt, str.data, str.len);
-    fmt[str.len] = '\0';
+    ngx_memcpy(fmt, format.data, format.len);
+    fmt[format.len] = '\0';
 
     ngx_libc_gmtime(ts, &tm);
 
@@ -4493,7 +4493,7 @@ ngx_stream_var_local_time_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    str;
+    ngx_str_t                    val, format;
     time_t                       ts;
     struct tm                    tm;
     char                         buf[2048];
@@ -4503,7 +4503,7 @@ ngx_stream_var_local_time_handler(ngx_stream_session_t *s,
 
     if (rule->args->nelts == 1) {
 
-        if (ngx_stream_complex_value(s, &args[0], &str) != NGX_OK) {
+        if (ngx_stream_complex_value(s, &args[0], &format) != NGX_OK) {
             return NGX_ERROR;
         }
 
@@ -4511,30 +4511,30 @@ ngx_stream_var_local_time_handler(ngx_stream_session_t *s,
 
     } else {
 
-        if (ngx_stream_complex_value(s, &args[0], &str) != NGX_OK) {
+        if (ngx_stream_complex_value(s, &args[0], &val) != NGX_OK) {
             return NGX_ERROR;
         }
 
-        ts = ngx_atoi(str.data, str.len);
+        ts = ngx_atoi(val.data, val.len);
         if (ts == NGX_ERROR) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: invalid unix_time value");
             return NGX_ERROR;
         }
 
-        if (ngx_stream_complex_value(s, &args[1], &str) != NGX_OK) {
+        if (ngx_stream_complex_value(s, &args[1], &format) != NGX_OK) {
             return NGX_ERROR;
         }
     }
 
-    if (str.len >= sizeof(fmt)) {
+    if (format.len >= sizeof(fmt)) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: date format too long");
         return NGX_ERROR;
     }
 
-    if (str.len == sizeof("%s") - 1 && str.data[0] == '%'
-        && str.data[1] == 's')
+    if (format.len == sizeof("%s") - 1 && format.data[0] == '%'
+        && format.data[1] == 's')
     {
         v->data = ngx_pnalloc(s->connection->pool, NGX_TIME_T_LEN);
         if (v->data == NULL) {
@@ -4546,8 +4546,8 @@ ngx_stream_var_local_time_handler(ngx_stream_session_t *s,
         return NGX_OK;
     }
 
-    ngx_memcpy(fmt, str.data, str.len);
-    fmt[str.len] = '\0';
+    ngx_memcpy(fmt, format.data, format.len);
+    fmt[format.len] = '\0';
 
     ngx_libc_localtime(ts, &tm);
 
@@ -4574,10 +4574,10 @@ ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    val, timefmt, tz;
+    ngx_str_t                    val, format, timezone;
     ngx_tm_t                     tm;
     time_t                       ts;
-    ngx_int_t                    tz_offset;
+    ngx_int_t                    timezone_offset;
     u_char                      *p;
     ngx_uint_t                   i;
     char                         buf[2048];
@@ -4599,11 +4599,13 @@ ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_complex_value(s, &args[1], &timefmt) != NGX_OK) {
+    if (ngx_stream_complex_value(s, &args[1], &format) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    if (timefmt.len == 9 && ngx_strncmp(timefmt.data, "http_time", 9) == 0) {
+    if (format.len == 9
+        && ngx_strncmp(format.data, "http_time", 9) == 0)
+    {
         ts = ngx_parse_http_time(val.data, val.len);
         if (ts == NGX_ERROR) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
@@ -4614,59 +4616,61 @@ ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
         goto set_unix_time;
     }
 
-    tz_offset = 0;
+    timezone_offset = 0;
 
     if (rule->args->nelts == 3) {
 
-        if (ngx_stream_complex_value(s, &args[2], &tz) != NGX_OK) {
+        if (ngx_stream_complex_value(s, &args[2], &timezone) != NGX_OK) {
             return NGX_ERROR;
         }
 
-        if (ngx_strncasecmp(tz.data, (u_char *) "gmt", 3) != 0) {
+        if (ngx_strncasecmp(timezone.data, (u_char *) "gmt", 3) != 0) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                           "var: invalid timezone format");
             return NGX_ERROR;
         }
 
-        tz.len = tz.len - 3;
-        tz.data = tz.data + 3;
+        timezone.len = timezone.len - 3;
+        timezone.data = timezone.data + 3;
 
-        if (tz.len != 0) {
+        if (timezone.len != 0) {
 
-            if (tz.len != 5 || (tz.data[0] != '+' && tz.data[0] != '-')) {
+            if (timezone.len != 5
+                || (timezone.data[0] != '+' && timezone.data[0] != '-'))
+            {
                 ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                               "var: invalid timezone format");
                 return NGX_ERROR;
             }
 
-            for (i = 1; i < tz.len; i++) {
+            for (i = 1; i < timezone.len; i++) {
 
-                if (tz.data[i] < '0' || tz.data[i] > '9') {
+                if (timezone.data[i] < '0' || timezone.data[i] > '9') {
                     ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                                   "var: invalid timezone offset value");
                     return NGX_ERROR;
                 }
             }
 
-            tz_offset = (tz.data[1] - '0') * 10 * 60 * 60;
-            tz_offset += (tz.data[2] - '0') * 60 * 60;
-            tz_offset += (tz.data[3] - '0') * 10 * 60;
-            tz_offset += (tz.data[4] - '0') * 60;
+            timezone_offset = (timezone.data[1] - '0') * 10 * 60 * 60;
+            timezone_offset += (timezone.data[2] - '0') * 60 * 60;
+            timezone_offset += (timezone.data[3] - '0') * 10 * 60;
+            timezone_offset += (timezone.data[4] - '0') * 60;
 
-            if (tz.data[0] == '-') {
-                tz_offset = -tz_offset;
+            if (timezone.data[0] == '-') {
+                timezone_offset = -timezone_offset;
             }
         }
     }
 
-    if (timefmt.len >= sizeof(buf)) {
+    if (format.len >= sizeof(buf)) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var: date format too long");
         return NGX_ERROR;
     }
 
-    ngx_memcpy(buf, timefmt.data, timefmt.len);
-    buf[timefmt.len] = '\0';
+    ngx_memcpy(buf, format.data, format.len);
+    buf[format.len] = '\0';
 
     ngx_memzero(&tm, sizeof(ngx_tm_t));
 
@@ -4676,7 +4680,7 @@ ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    ts = timegm(&tm) - tz_offset;
+    ts = timegm(&tm) - timezone_offset;
 
 set_unix_time:
 
@@ -4697,7 +4701,7 @@ ngx_stream_var_cidr_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
     ngx_stream_complex_value_t  *args;
-    ngx_str_t                    ip, str;
+    ngx_str_t                    ip, bits;
     ngx_int_t                    ipv4_bits, ipv6_bits;
     in_addr_t                    ipv4_addr, network;
     u_char                      *p;
@@ -4715,27 +4719,27 @@ ngx_stream_var_cidr_handler(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    if (ngx_stream_complex_value(s, &args[1], &str) != NGX_OK) {
+    if (ngx_stream_complex_value(s, &args[1], &bits) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    ipv4_bits = ngx_atoi(str.data, str.len);
+    ipv4_bits = ngx_atoi(bits.data, bits.len);
     if (ipv4_bits == NGX_ERROR || ipv4_bits == 0 || ipv4_bits > 32) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid IPv4 network bits: \"%V\"", &str);
+                      "var: invalid IPv4 network bits: \"%V\"", &bits);
         return NGX_ERROR;
     }
 
     if (rule->args->nelts == 3) {
 
-        if (ngx_stream_complex_value(s, &args[2], &str) != NGX_OK) {
+        if (ngx_stream_complex_value(s, &args[2], &bits) != NGX_OK) {
             return NGX_ERROR;
         }
 
-        ipv6_bits = ngx_atoi(str.data, str.len);
+        ipv6_bits = ngx_atoi(bits.data, bits.len);
         if (ipv6_bits == NGX_ERROR || ipv6_bits == 0 || ipv6_bits > 128) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: invalid IPv6 network bits: \"%V\"", &str);
+                          "var: invalid IPv6 network bits: \"%V\"", &bits);
             return NGX_ERROR;
         }
 
