@@ -185,6 +185,18 @@ static char *ngx_http_var_merge_loc_conf(ngx_conf_t *cf, void *parent,
 
 static char *ngx_http_var(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static ngx_int_t ngx_http_var_parser(ngx_conf_t *cf,
+    ngx_http_var_func_t *func, ngx_http_var_rule_t *rule);
+static ngx_http_var_variable_t *ngx_http_var_add_variable(ngx_conf_t *cf,
+    ngx_http_var_conf_t *vcf, ngx_str_t *name);
+static ngx_int_t ngx_http_var_compile_value(ngx_conf_t *cf,
+    ngx_str_t *value, ngx_http_complex_value_t *cv);
+static ngx_int_t ngx_http_var_compile_args(ngx_conf_t *cf,
+    ngx_http_var_rule_t *rule, ngx_str_t *value, ngx_uint_t nargs);
+#if (NGX_PCRE)
+static ngx_int_t ngx_http_var_compile_regex(ngx_conf_t *cf,
+    ngx_http_var_rule_t *rule, ngx_str_t *value);
+#endif
 
 static ngx_http_var_ctx_t *ngx_http_var_get_ctx(ngx_http_request_t *r);
 static ngx_int_t ngx_http_variable_acquire_lock(ngx_http_request_t *r,
@@ -208,13 +220,8 @@ static ngx_int_t ngx_http_var_helper_auto_atofp(ngx_str_t val1, ngx_str_t val2,
 #if (nginx_version >= 1031003)
 static uint64_t ngx_http_var_helper_random64(void);
 #endif
-static ngx_int_t ngx_http_var_helper_escape_uri(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule,
-    ngx_uint_t type);
 static u_char *ngx_http_var_helper_strlstrn(u_char *s1, u_char *last,
     u_char *s2, size_t n);
-static ngx_int_t ngx_http_var_helper_filter_params(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule, ngx_uint_t keep);
 
 #if (NGX_OPENSSL)
 static ngx_int_t ngx_http_var_helper_sha(ngx_http_request_t *r,
@@ -809,37 +816,14 @@ ngx_http_var_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 static char *
 ngx_http_var(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-    ngx_http_var_conf_t         *vcf = conf;
+    ngx_http_var_conf_t      *vcf = conf;
 
-    ngx_str_t                   *value;
-    ngx_uint_t                   cur, last;
-#if !(NGX_CONDITION)
-    ngx_str_t                    s;
-#endif
-    ngx_http_variable_t         *v;
-    ngx_http_var_variable_t     *var;
-    ngx_http_var_rule_t         *rule;
-    ngx_http_var_func_t         *func;
-    ngx_uint_t                   i;
-    ngx_uint_t                   ignore_case, args;
-#if !(NGX_CONDITION)
-    ngx_http_complex_value_t    *filter;
-    ngx_uint_t                   negative;
-#endif
-    ngx_int_t                    index;
-
-#if (NGX_PCRE)
-    ngx_regex_compile_t          rc;
-    u_char                       errstr[NGX_MAX_CONF_ERRSTR];
-    ngx_str_t                    regex;
-    size_t                       regex_len;
-#endif
-
-    ngx_http_complex_value_t          *cv;
-    ngx_http_compile_complex_value_t   ccv;
+    ngx_str_t                *value;
+    ngx_http_var_variable_t  *var;
+    ngx_http_var_rule_t       parsed_rule, *rule;
+    ngx_http_var_func_t      *func;
 
     value = cf->args->elts;
-    last = cf->args->nelts - 1;
 
     if (value[1].len == 0 || value[1].data[0] != '$') {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
@@ -871,122 +855,13 @@ ngx_http_var(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
-#if (NGX_CONDITION)
-    if (cf->args->nelts > 3
-        && (ngx_strncmp(value[last].data, "if=", 3) == 0
-            || ngx_strncmp(value[last].data, "if!=", 4) == 0))
-    {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "invalid parameter \"%V\"", &value[last]);
+    if (ngx_http_var_parser(cf, func, &parsed_rule) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
 
-    args = cf->args->nelts - 3;
-#else
-    filter = NULL;
-    negative = 0;
-    if (cf->args->nelts > 3
-        && (ngx_strncmp(value[last].data, "if=", 3) == 0
-            || ngx_strncmp(value[last].data, "if!=", 4) == 0))
-    {
-        if (value[last].data[2] == '=') {
-            s.len = value[last].len - 3;
-            s.data = value[last].data + 3;
-            negative = 0;
-
-        } else {
-            s.len = value[last].len - 4;
-            s.data = value[last].data + 4;
-            negative = 1;
-        }
-
-        ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
-
-        ccv.cf = cf;
-        ccv.value = &s;
-        ccv.complex_value = ngx_palloc(cf->pool,
-                                       sizeof(ngx_http_complex_value_t));
-        if (ccv.complex_value == NULL) {
-            return NGX_CONF_ERROR;
-        }
-
-        if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
-            return NGX_CONF_ERROR;
-        }
-
-        filter = ccv.complex_value;
-        args = cf->args->nelts - 4;
-        last--;
-
-    } else {
-        args = cf->args->nelts - 3;
-    }
-#endif
-
-    cur = 3;
-    ignore_case = 0;
-    if (cur <= last && value[cur].len == 2
-        && value[cur].data[0] == '-' && value[cur].data[1] == 'i')
-    {
-        ignore_case = 1;
-        args--;
-        cur++;
-    }
-
-    if (args < func->min_args || args > func->max_args) {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "var: invalid number of arguments "
-                           "for function \"%V\"", &value[2]);
+    var = ngx_http_var_add_variable(cf, vcf, &value[1]);
+    if (var == NULL) {
         return NGX_CONF_ERROR;
-    }
-
-    v = ngx_http_add_variable(cf, &value[1],
-                              NGX_HTTP_VAR_CHANGEABLE
-                              |NGX_HTTP_VAR_NOCACHEABLE);
-    if (v == NULL) {
-        return NGX_CONF_ERROR;
-    }
-
-    if (v->get_handler && v->get_handler != ngx_http_var_variable_handler) {
-        ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
-                           "var: variable \"%V\" already "
-                           "has other handler", &value[1]);
-        return NGX_CONF_ERROR;
-    }
-
-    index = ngx_http_get_variable_index(cf, &value[1]);
-
-    if (vcf->vars == NULL) {
-        vcf->vars = ngx_array_create(cf->pool, 4,
-                                     sizeof(ngx_http_var_variable_t));
-        if (vcf->vars == NULL) {
-            return NGX_CONF_ERROR;
-        }
-    }
-
-    for (i = 0; i < vcf->vars->nelts; i++) {
-
-        var = (ngx_http_var_variable_t *) vcf->vars->elts + i;
-
-        if (var->index == index) {
-            break;
-        }
-    }
-
-    if (i == vcf->vars->nelts) {
-        var = ngx_array_push(vcf->vars);
-        if (var == NULL) {
-            return NGX_CONF_ERROR;
-        }
-
-        var->name = value[1];
-        var->index = index;
-
-        var->rules = ngx_array_create(cf->pool, 4,
-                                      sizeof(ngx_http_var_rule_t));
-        if (var->rules == NULL) {
-            return NGX_CONF_ERROR;
-        }
     }
 
     rule = ngx_array_push(var->rules);
@@ -994,8 +869,104 @@ ngx_http_var(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    *rule = parsed_rule;
+
+    return NGX_CONF_OK;
+}
+
+
+static ngx_int_t
+ngx_http_var_parser(ngx_conf_t *cf, ngx_http_var_func_t *func,
+    ngx_http_var_rule_t *rule)
+{
+    ngx_str_t                  *value;
+    ngx_uint_t                  first, last, nargs;
+#if !(NGX_CONDITION)
+    ngx_str_t                   filter_value;
+    ngx_http_complex_value_t   *filter;
+    ngx_uint_t                  negative;
+#endif
+
+    value = cf->args->elts;
+    last = cf->args->nelts - 1;
+
+#if (NGX_CONDITION)
+
+    if (cf->args->nelts > 3
+        && ((value[last].len >= 3
+             && ngx_strncmp(value[last].data, "if=", 3) == 0)
+            || (value[last].len >= 4
+                && ngx_strncmp(value[last].data, "if!=", 4) == 0)))
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "invalid parameter \"%V\"", &value[last]);
+        return NGX_ERROR;
+    }
+
+    nargs = cf->args->nelts - 3;
+
+#else
+
+    filter = NULL;
+    negative = 0;
+
+    if (cf->args->nelts > 3
+        && ((value[last].len >= 3
+             && ngx_strncmp(value[last].data, "if=", 3) == 0)
+            || (value[last].len >= 4
+                && ngx_strncmp(value[last].data, "if!=", 4) == 0)))
+    {
+        if (value[last].data[2] == '=') {
+            filter_value.len = value[last].len - 3;
+            filter_value.data = value[last].data + 3;
+
+        } else {
+            filter_value.len = value[last].len - 4;
+            filter_value.data = value[last].data + 4;
+            negative = 1;
+        }
+
+        filter = ngx_palloc(cf->pool, sizeof(ngx_http_complex_value_t));
+        if (filter == NULL) {
+            return NGX_ERROR;
+        }
+
+        if (ngx_http_var_compile_value(cf, &filter_value, filter)
+            != NGX_OK)
+        {
+            return NGX_ERROR;
+        }
+
+        nargs = cf->args->nelts - 4;
+        last--;
+
+    } else {
+        nargs = cf->args->nelts - 3;
+    }
+
+#endif
+
+    first = 3;
+
+    ngx_memzero(rule, sizeof(ngx_http_var_rule_t));
+
     rule->func = func;
-    rule->ignore_case = ignore_case;
+
+    if (first <= last && value[first].len == 2
+        && value[first].data[0] == '-' && value[first].data[1] == 'i')
+    {
+        rule->ignore_case = 1;
+        nargs--;
+        first++;
+    }
+
+    if (nargs < func->min_args || nargs > func->max_args) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "var: invalid number of arguments "
+                           "for function \"%V\"", &func->name);
+        return NGX_ERROR;
+    }
+
 #if (NGX_CONDITION)
     rule->expr_id = ngx_condition_get_associated_expr_id(cf);
 #else
@@ -1008,117 +979,196 @@ ngx_http_var(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     if (func->type == NGX_HTTP_VAR_FUNC_REGEX_CAPTURE
         || func->type == NGX_HTTP_VAR_FUNC_REGEX_SUB)
     {
-        args--;
-
-        rule->args = ngx_array_create(cf->pool, ngx_max(args, 1),
-                                      sizeof(ngx_http_complex_value_t));
-        if (rule->args == NULL) {
-            return NGX_CONF_ERROR;
-        }
-
-        cv = ngx_array_push(rule->args);
-        if (cv == NULL) {
-            return NGX_CONF_ERROR;
-        }
-
-        ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
-
-        ccv.cf = cf;
-        ccv.value = &value[cur];
-        ccv.complex_value = cv;
-
-        if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
-            return NGX_CONF_ERROR;
-        }
-
-        cur++;
-
-        if (func->type == NGX_HTTP_VAR_FUNC_REGEX_SUB) {
-            regex_len = value[cur].len + 2;
-            regex.data = ngx_pnalloc(cf->pool, regex_len);
-            if (regex.data == NULL) {
-                return NGX_CONF_ERROR;
-            }
-
-            ngx_memcpy(regex.data, value[cur].data, value[cur].len);
-            ngx_memcpy(regex.data + value[cur].len, "()", 2);
-            regex.len = regex_len;
-
-        } else {
-            regex = value[cur];
-        }
-
-        ngx_memzero(&rc, sizeof(ngx_regex_compile_t));
-
-        rc.pattern = regex;
-        rc.pool = cf->pool;
-        rc.err.len = NGX_MAX_CONF_ERRSTR;
-        rc.err.data = errstr;
-
-        if (ignore_case == 1) {
-            rc.options = NGX_REGEX_CASELESS;
-        }
-
-        rule->regex = ngx_http_regex_compile(cf, &rc);
-        if (rule->regex == NULL) {
-            return NGX_CONF_ERROR;
-        }
-
-        cur++;
-
-        cv = ngx_array_push(rule->args);
-        if (cv == NULL) {
-            return NGX_CONF_ERROR;
-        }
-
-        ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
-
-        ccv.cf = cf;
-        ccv.value = &value[cur];
-        ccv.complex_value = cv;
-
-        if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
-            return NGX_CONF_ERROR;
-        }
-
-    } else {
-
-#endif
-
-        rule->args = ngx_array_create(cf->pool, ngx_max(args, 1),
-                                      sizeof(ngx_http_complex_value_t));
-        if (rule->args == NULL) {
-            return NGX_CONF_ERROR;
-        }
-
-        for (i = 0; i < args; i++) {
-            cv = ngx_array_push(rule->args);
-            if (cv == NULL) {
-                return NGX_CONF_ERROR;
-            }
-
-            ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
-
-            ccv.cf = cf;
-            ccv.value = &value[cur + i];
-            ccv.complex_value = cv;
-
-            if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
-                return NGX_CONF_ERROR;
-            }
-        }
-
-#if (NGX_PCRE)
-
+        return ngx_http_var_compile_regex(cf, rule, &value[first]);
     }
 
 #endif
 
+    return ngx_http_var_compile_args(cf, rule, &value[first], nargs);
+}
+
+
+static ngx_http_var_variable_t *
+ngx_http_var_add_variable(ngx_conf_t *cf, ngx_http_var_conf_t *vcf,
+    ngx_str_t *name)
+{
+    ngx_http_variable_t      *v;
+    ngx_http_var_variable_t  *var;
+    ngx_int_t                 index;
+    ngx_uint_t                i;
+
+    v = ngx_http_add_variable(cf, name,
+                              NGX_HTTP_VAR_CHANGEABLE
+                              |NGX_HTTP_VAR_NOCACHEABLE);
+    if (v == NULL) {
+        return NULL;
+    }
+
+    if (v->get_handler && v->get_handler != ngx_http_var_variable_handler) {
+        ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                           "var: variable \"%V\" already "
+                           "has other handler", name);
+        return NULL;
+    }
+
+    index = ngx_http_get_variable_index(cf, name);
+    if (index == NGX_ERROR) {
+        return NULL;
+    }
+
+    if (vcf->vars == NULL) {
+        vcf->vars = ngx_array_create(cf->pool, 4,
+                                     sizeof(ngx_http_var_variable_t));
+        if (vcf->vars == NULL) {
+            return NULL;
+        }
+    }
+
+    var = vcf->vars->elts;
+
+    for (i = 0; i < vcf->vars->nelts; i++) {
+        if (var[i].index == index) {
+            var = &var[i];
+            goto found;
+        }
+    }
+
+    var = ngx_array_push(vcf->vars);
+    if (var == NULL) {
+        return NULL;
+    }
+
+    var->name = *name;
+    var->index = index;
+    var->rules = ngx_array_create(cf->pool, 4,
+                                  sizeof(ngx_http_var_rule_t));
+    if (var->rules == NULL) {
+        return NULL;
+    }
+
+found:
+
     v->data = (uintptr_t) &var->index;
     v->get_handler = ngx_http_var_variable_handler;
 
-    return NGX_CONF_OK;
+    return var;
 }
+
+
+static ngx_int_t
+ngx_http_var_compile_value(ngx_conf_t *cf, ngx_str_t *value,
+    ngx_http_complex_value_t *cv)
+{
+    ngx_http_compile_complex_value_t  ccv;
+
+    ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
+    ngx_memzero(cv, sizeof(ngx_http_complex_value_t));
+
+    ccv.cf = cf;
+    ccv.value = value;
+    ccv.complex_value = cv;
+
+    return ngx_http_compile_complex_value(&ccv);
+}
+
+
+static ngx_int_t
+ngx_http_var_compile_args(ngx_conf_t *cf, ngx_http_var_rule_t *rule,
+    ngx_str_t *value, ngx_uint_t nargs)
+{
+    ngx_http_complex_value_t  *cv;
+    ngx_uint_t                 i;
+
+    rule->args = ngx_array_create(cf->pool, ngx_max(nargs, 1),
+                                  sizeof(ngx_http_complex_value_t));
+    if (rule->args == NULL) {
+        return NGX_ERROR;
+    }
+
+    for (i = 0; i < nargs; i++) {
+        cv = ngx_array_push(rule->args);
+        if (cv == NULL) {
+            return NGX_ERROR;
+        }
+
+        if (ngx_http_var_compile_value(cf, &value[i], cv)
+            != NGX_OK)
+        {
+            return NGX_ERROR;
+        }
+    }
+
+    return NGX_OK;
+}
+
+
+#if (NGX_PCRE)
+
+static ngx_int_t
+ngx_http_var_compile_regex(ngx_conf_t *cf,
+    ngx_http_var_rule_t *rule, ngx_str_t *value)
+{
+    ngx_http_complex_value_t  *cv;
+    ngx_regex_compile_t        rc;
+    ngx_str_t                  regex;
+    u_char                     errstr[NGX_MAX_CONF_ERRSTR];
+
+    rule->args = ngx_array_create(cf->pool, 2,
+                                  sizeof(ngx_http_complex_value_t));
+    if (rule->args == NULL) {
+        return NGX_ERROR;
+    }
+
+    cv = ngx_array_push(rule->args);
+    if (cv == NULL) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_var_compile_value(cf, &value[0], cv)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    if (rule->func->type == NGX_HTTP_VAR_FUNC_REGEX_SUB) {
+        regex.len = value[1].len + 2;
+        regex.data = ngx_pnalloc(cf->pool, regex.len);
+        if (regex.data == NULL) {
+            return NGX_ERROR;
+        }
+
+        ngx_memcpy(regex.data, value[1].data, value[1].len);
+        ngx_memcpy(regex.data + value[1].len, "()", 2);
+
+    } else {
+        regex = value[1];
+    }
+
+    ngx_memzero(&rc, sizeof(ngx_regex_compile_t));
+
+    rc.pattern = regex;
+    rc.pool = cf->pool;
+    rc.err.len = NGX_MAX_CONF_ERRSTR;
+    rc.err.data = errstr;
+
+    if (rule->ignore_case) {
+        rc.options = NGX_REGEX_CASELESS;
+    }
+
+    rule->regex = ngx_http_regex_compile(cf, &rc);
+    if (rule->regex == NULL) {
+        return NGX_ERROR;
+    }
+
+    cv = ngx_array_push(rule->args);
+    if (cv == NULL) {
+        return NGX_ERROR;
+    }
+
+    return ngx_http_var_compile_value(cf, &value[2], cv);
+}
+
+#endif
 
 
 static ngx_http_var_ctx_t *
@@ -1596,53 +1646,6 @@ ngx_http_var_helper_random64(void)
 #endif
 
 
-static ngx_int_t
-ngx_http_var_helper_escape_uri(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule,
-    ngx_uint_t type)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val;
-    size_t                     len;
-    uintptr_t                  escape;
-    u_char                    *src, *dst;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    if (val.len == 0) {
-        v->len = 0;
-        v->data = (u_char *) "";
-        return NGX_OK;
-    }
-
-    src = val.data;
-
-    escape = 2 * ngx_escape_uri(NULL, src, val.len, type);
-    len = val.len + escape;
-
-    dst = ngx_pnalloc(r->pool, len);
-    if (dst == NULL) {
-        return NGX_ERROR;
-    }
-
-    if (escape == 0) {
-        ngx_memcpy(dst, src, val.len);
-
-    } else {
-        ngx_escape_uri(dst, src, val.len, type);
-    }
-
-    v->len = len;
-    v->data = dst;
-
-    return NGX_OK;
-}
-
-
 /*
  * same as ngx_strlcasestrn(), but case-sensitive.
  * ngx_http_var_helper_strlstrn() is intended to search for static substring
@@ -1671,246 +1674,6 @@ ngx_http_var_helper_strlstrn(u_char *s1, u_char *last, u_char *s2, size_t n)
     } while (ngx_strncmp(s1, s2, n) != 0);
 
     return --s1;
-}
-
-
-static ngx_int_t
-ngx_http_var_helper_filter_params(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule, ngx_uint_t keep)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val;
-    ngx_str_t                 *key_elts;
-    u_char                    *p, *last, *eq, *next_sep;
-    ngx_uint_t                 j, found, first;
-    size_t                     len;
-    u_char                    *result, *dst;
-    ngx_str_t                  key;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    /* Evaluate all args */
-    key_elts = ngx_palloc(r->pool, rule->args->nelts * sizeof(ngx_str_t));
-    if (key_elts == NULL) {
-        return NGX_ERROR;
-    }
-
-    for (j = 0; j < rule->args->nelts; j++) {
-        if (ngx_http_complex_value(r, &args[j], &key_elts[j]) != NGX_OK) {
-            return NGX_ERROR;
-        }
-    }
-
-    /* separator and delimiter are required */
-    if (key_elts[1].len != 1) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid separator: \"%V\"",
-                      &key_elts[1]);
-        goto return_original;
-    }
-
-    if (key_elts[2].len != 1) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid delimiter: \"%V\"",
-                      &key_elts[2]);
-        goto return_original;
-    }
-
-    if (val.len == 0) {
-        goto return_original;
-    }
-
-    /* First pass: calculate result length */
-    len = 0;
-    first = 1;
-    p = val.data;
-    last = val.data + val.len;
-
-    while (p < last) {
-        /* Find next separator */
-        next_sep = ngx_strlchr(p, last, key_elts[1].data[0]);
-        if (next_sep == NULL) {
-            next_sep = last;
-        }
-
-        /* Skip empty segments */
-        if (p == next_sep) {
-            p = next_sep + 1;
-            continue;
-        }
-
-        /* Find delimiter in this segment */
-        eq = ngx_strlchr(p, next_sep, key_elts[2].data[0]);
-
-        /* Extract param name (trim spaces) */
-        key.data = p;
-        if (eq == NULL) {
-            key.len = next_sep - p;
-
-        } else {
-            key.len = eq - p;
-        }
-
-        while (key.len && ngx_http_var_isspace(key.data[0])) {
-            key.data++;
-            key.len--;
-        }
-
-        while (key.len && ngx_http_var_isspace(key.data[key.len - 1])) {
-            key.len--;
-        }
-
-        if (key.len == 0) {
-            p = next_sep + 1;
-            continue;
-        }
-
-        /* Check if key is in the list */
-        found = 0;
-        for (j = 3; j < rule->args->nelts; j++) {
-            if (key.len == key_elts[j].len) {
-                if (rule->ignore_case) {
-                    if (ngx_strncasecmp(key.data, key_elts[j].data, key.len)
-                        == 0)
-                    {
-                        found = 1;
-                        break;
-                    }
-
-                } else {
-                    if (ngx_strncmp(key.data, key_elts[j].data, key.len)
-                        == 0)
-                    {
-                        found = 1;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if ((keep && found) || (!keep && !found)) {
-            if (!first) {
-                len += 1; /* separator */
-            }
-
-            len += next_sep - p;
-            first = 0;
-        }
-
-        if (next_sep == last) {
-            break;
-        }
-
-        p = next_sep + 1;
-    }
-
-    if (first) {
-        /* No params matched */
-        v->len = 0;
-        v->data = (u_char *) "";
-        return NGX_OK;
-    }
-
-    /* Second pass: build result */
-    result = ngx_pnalloc(r->pool, len);
-    if (result == NULL) {
-        return NGX_ERROR;
-    }
-
-    dst = result;
-    first = 1;
-    p = val.data;
-    last = val.data + val.len;
-
-    while (p < last) {
-        next_sep = ngx_strlchr(p, last, key_elts[1].data[0]);
-        if (next_sep == NULL) {
-            next_sep = last;
-        }
-
-        if (p == next_sep) {
-            p = next_sep + 1;
-            continue;
-        }
-
-        eq = ngx_strlchr(p, next_sep, key_elts[2].data[0]);
-
-        key.data = p;
-        if (eq == NULL) {
-            key.len = next_sep - p;
-
-        } else {
-            key.len = eq - p;
-        }
-
-        while (key.len && ngx_http_var_isspace(key.data[0])) {
-            key.data++;
-            key.len--;
-        }
-
-        while (key.len && ngx_http_var_isspace(key.data[key.len - 1])) {
-            key.len--;
-        }
-
-        if (key.len == 0) {
-            p = next_sep + 1;
-            continue;
-        }
-
-        found = 0;
-        for (j = 3; j < rule->args->nelts; j++) {
-            if (key.len == key_elts[j].len) {
-                if (rule->ignore_case) {
-                    if (ngx_strncasecmp(key.data, key_elts[j].data, key.len)
-                        == 0)
-                    {
-                        found = 1;
-                        break;
-                    }
-
-                } else {
-                    if (ngx_strncmp(key.data, key_elts[j].data, key.len)
-                        == 0)
-                    {
-                        found = 1;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if ((keep && found) || (!keep && !found)) {
-            if (!first) {
-                *dst++ = key_elts[1].data[0];
-            }
-
-            ngx_memcpy(dst, p, next_sep - p);
-            dst += next_sep - p;
-            first = 0;
-        }
-
-        if (next_sep == last) {
-            break;
-        }
-
-        p = next_sep + 1;
-    }
-
-    v->len = dst - result;
-    v->data = result;
-
-    return NGX_OK;
-
-return_original:
-
-    v->len = val.len;
-    v->data = val.data;
-
-    return NGX_OK;
 }
 
 
@@ -2694,7 +2457,14 @@ static ngx_int_t
 ngx_http_var_params_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
 {
-    ngx_uint_t  keep;
+    ngx_http_complex_value_t  *args;
+    ngx_str_t                  val;
+    ngx_str_t                 *key_elts;
+    u_char                    *p, *last, *eq, *next_sep;
+    ngx_uint_t                 j, found, first, keep;
+    size_t                     len;
+    u_char                    *result, *dst;
+    ngx_str_t                  key;
 
     if (rule->func->type == NGX_HTTP_VAR_FUNC_KEEP_PARAMS) {
         keep = 1;
@@ -2703,7 +2473,230 @@ ngx_http_var_params_handler(ngx_http_request_t *r,
         keep = 0;
     }
 
-    return ngx_http_var_helper_filter_params(r, v, rule, keep);
+    args = rule->args->elts;
+
+    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    /* Evaluate all args */
+    key_elts = ngx_palloc(r->pool, rule->args->nelts * sizeof(ngx_str_t));
+    if (key_elts == NULL) {
+        return NGX_ERROR;
+    }
+
+    for (j = 0; j < rule->args->nelts; j++) {
+        if (ngx_http_complex_value(r, &args[j], &key_elts[j]) != NGX_OK) {
+            return NGX_ERROR;
+        }
+    }
+
+    /* separator and delimiter are required */
+    if (key_elts[1].len != 1) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "var: invalid separator: \"%V\"",
+                      &key_elts[1]);
+        goto return_original;
+    }
+
+    if (key_elts[2].len != 1) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "var: invalid delimiter: \"%V\"",
+                      &key_elts[2]);
+        goto return_original;
+    }
+
+    if (val.len == 0) {
+        goto return_original;
+    }
+
+    /* First pass: calculate result length */
+    len = 0;
+    first = 1;
+    p = val.data;
+    last = val.data + val.len;
+
+    while (p < last) {
+        /* Find next separator */
+        next_sep = ngx_strlchr(p, last, key_elts[1].data[0]);
+        if (next_sep == NULL) {
+            next_sep = last;
+        }
+
+        /* Skip empty segments */
+        if (p == next_sep) {
+            p = next_sep + 1;
+            continue;
+        }
+
+        /* Find delimiter in this segment */
+        eq = ngx_strlchr(p, next_sep, key_elts[2].data[0]);
+
+        /* Extract param name (trim spaces) */
+        key.data = p;
+        if (eq == NULL) {
+            key.len = next_sep - p;
+
+        } else {
+            key.len = eq - p;
+        }
+
+        while (key.len && ngx_http_var_isspace(key.data[0])) {
+            key.data++;
+            key.len--;
+        }
+
+        while (key.len && ngx_http_var_isspace(key.data[key.len - 1])) {
+            key.len--;
+        }
+
+        if (key.len == 0) {
+            p = next_sep + 1;
+            continue;
+        }
+
+        /* Check if key is in the list */
+        found = 0;
+        for (j = 3; j < rule->args->nelts; j++) {
+            if (key.len == key_elts[j].len) {
+                if (rule->ignore_case) {
+                    if (ngx_strncasecmp(key.data, key_elts[j].data, key.len)
+                        == 0)
+                    {
+                        found = 1;
+                        break;
+                    }
+
+                } else {
+                    if (ngx_strncmp(key.data, key_elts[j].data, key.len)
+                        == 0)
+                    {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if ((keep && found) || (!keep && !found)) {
+            if (!first) {
+                len += 1; /* separator */
+            }
+
+            len += next_sep - p;
+            first = 0;
+        }
+
+        if (next_sep == last) {
+            break;
+        }
+
+        p = next_sep + 1;
+    }
+
+    if (first) {
+        /* No params matched */
+        v->len = 0;
+        v->data = (u_char *) "";
+        return NGX_OK;
+    }
+
+    /* Second pass: build result */
+    result = ngx_pnalloc(r->pool, len);
+    if (result == NULL) {
+        return NGX_ERROR;
+    }
+
+    dst = result;
+    first = 1;
+    p = val.data;
+    last = val.data + val.len;
+
+    while (p < last) {
+        next_sep = ngx_strlchr(p, last, key_elts[1].data[0]);
+        if (next_sep == NULL) {
+            next_sep = last;
+        }
+
+        if (p == next_sep) {
+            p = next_sep + 1;
+            continue;
+        }
+
+        eq = ngx_strlchr(p, next_sep, key_elts[2].data[0]);
+
+        key.data = p;
+        if (eq == NULL) {
+            key.len = next_sep - p;
+
+        } else {
+            key.len = eq - p;
+        }
+
+        while (key.len && ngx_http_var_isspace(key.data[0])) {
+            key.data++;
+            key.len--;
+        }
+
+        while (key.len && ngx_http_var_isspace(key.data[key.len - 1])) {
+            key.len--;
+        }
+
+        if (key.len == 0) {
+            p = next_sep + 1;
+            continue;
+        }
+
+        found = 0;
+        for (j = 3; j < rule->args->nelts; j++) {
+            if (key.len == key_elts[j].len) {
+                if (rule->ignore_case) {
+                    if (ngx_strncasecmp(key.data, key_elts[j].data, key.len)
+                        == 0)
+                    {
+                        found = 1;
+                        break;
+                    }
+
+                } else {
+                    if (ngx_strncmp(key.data, key_elts[j].data, key.len)
+                        == 0)
+                    {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if ((keep && found) || (!keep && !found)) {
+            if (!first) {
+                *dst++ = key_elts[1].data[0];
+            }
+
+            ngx_memcpy(dst, p, next_sep - p);
+            dst += next_sep - p;
+            first = 0;
+        }
+
+        if (next_sep == last) {
+            break;
+        }
+
+        p = next_sep + 1;
+    }
+
+    v->len = dst - result;
+    v->data = result;
+
+    return NGX_OK;
+
+return_original:
+
+    v->len = val.len;
+    v->data = val.data;
+
+    return NGX_OK;
 }
 
 
@@ -4047,7 +4040,12 @@ static ngx_int_t
 ngx_http_var_escape_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
 {
-    ngx_uint_t  type;
+    ngx_http_complex_value_t  *args;
+    ngx_str_t                  val;
+    size_t                     len;
+    uintptr_t                  escape;
+    ngx_uint_t                 type;
+    u_char                    *src, *dst;
 
     switch (rule->func->type) {
 
@@ -4071,7 +4069,39 @@ ngx_http_var_escape_handler(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    return ngx_http_var_helper_escape_uri(r, v, rule, type);
+    args = rule->args->elts;
+
+    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (val.len == 0) {
+        v->len = 0;
+        v->data = (u_char *) "";
+        return NGX_OK;
+    }
+
+    src = val.data;
+
+    escape = 2 * ngx_escape_uri(NULL, src, val.len, type);
+    len = val.len + escape;
+
+    dst = ngx_pnalloc(r->pool, len);
+    if (dst == NULL) {
+        return NGX_ERROR;
+    }
+
+    if (escape == 0) {
+        ngx_memcpy(dst, src, val.len);
+
+    } else {
+        ngx_escape_uri(dst, src, val.len, type);
+    }
+
+    v->len = len;
+    v->data = dst;
+
+    return NGX_OK;
 }
 
 
