@@ -223,15 +223,6 @@ static uint64_t ngx_http_var_helper_random64(void);
 static u_char *ngx_http_var_helper_strlstrn(u_char *s1, u_char *last,
     u_char *s2, size_t n);
 
-#if (NGX_OPENSSL)
-static ngx_int_t ngx_http_var_helper_sha(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule,
-    const EVP_MD *evp_md, size_t len);
-static ngx_int_t ngx_http_var_helper_hmac(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule,
-    const EVP_MD *evp_md);
-#endif
-
 static ngx_int_t ngx_http_var_set_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_len_handler(ngx_http_request_t *r,
@@ -1675,110 +1666,6 @@ ngx_http_var_helper_strlstrn(u_char *s1, u_char *last, u_char *s2, size_t n)
 
     return --s1;
 }
-
-
-#if (NGX_OPENSSL)
-
-static ngx_int_t
-ngx_http_var_helper_sha(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule,
-    const EVP_MD *evp_md, size_t hash_len)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val;
-    EVP_MD_CTX                *md;
-    u_char                     hash[EVP_MAX_MD_SIZE];
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    md = EVP_MD_CTX_create();
-    if (md == NULL) {
-        return NGX_ERROR;
-    }
-
-    if (EVP_DigestInit_ex(md, evp_md, NULL) == 0) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "EVP_DigestInit_ex() failed");
-        goto failed;
-    }
-
-    if (EVP_DigestUpdate(md, val.data, val.len) == 0) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "EVP_DigestUpdate() failed");
-        goto failed;
-    }
-
-    if (EVP_DigestFinal_ex(md, hash, NULL) == 0) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "EVP_DigestFinal_ex() failed");
-        goto failed;
-    }
-
-    EVP_MD_CTX_destroy(md);
-
-    v->data = ngx_pnalloc(r->pool, hash_len * 2);
-    if (v->data == NULL) {
-        return NGX_ERROR;
-    }
-
-    ngx_hex_dump(v->data, hash, hash_len);
-    v->len = hash_len * 2;
-
-    return NGX_OK;
-
-failed:
-
-    EVP_MD_CTX_destroy(md);
-
-    return NGX_ERROR;
-}
-
-
-static ngx_int_t
-ngx_http_var_helper_hmac(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule,
-    const EVP_MD *evp_md)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val_src, val_secret;
-    unsigned int               md_len;
-    unsigned char              md[EVP_MAX_MD_SIZE];
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val_src) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    if (ngx_http_complex_value(r, &args[1], &val_secret) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    md_len = 0;
-
-    HMAC(evp_md, val_secret.data, val_secret.len,
-         val_src.data, val_src.len, md, &md_len);
-
-    if (md_len == 0 || md_len > EVP_MAX_MD_SIZE) {
-        return NGX_ERROR;
-    }
-
-    v->data = ngx_pnalloc(r->pool, md_len);
-    if (v->data == NULL) {
-        return NGX_ERROR;
-    }
-
-    ngx_memcpy(v->data, &md, md_len);
-    v->len = md_len;
-
-    return NGX_OK;
-}
-
-#endif
 
 
 static ngx_int_t
@@ -4330,8 +4217,12 @@ static ngx_int_t
 ngx_http_var_sha_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
 {
-    const EVP_MD  *evp_md;
-    size_t         hash_len;
+    ngx_http_complex_value_t  *args;
+    ngx_str_t                  val;
+    EVP_MD_CTX                *md;
+    const EVP_MD              *evp_md;
+    size_t                     hash_len;
+    u_char                     hash[EVP_MAX_MD_SIZE];
 
     switch (rule->func->type) {
 
@@ -4359,7 +4250,52 @@ ngx_http_var_sha_handler(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    return ngx_http_var_helper_sha(r, v, rule, evp_md, hash_len);
+    args = rule->args->elts;
+
+    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    md = EVP_MD_CTX_create();
+    if (md == NULL) {
+        return NGX_ERROR;
+    }
+
+    if (EVP_DigestInit_ex(md, evp_md, NULL) == 0) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "EVP_DigestInit_ex() failed");
+        goto failed;
+    }
+
+    if (EVP_DigestUpdate(md, val.data, val.len) == 0) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "EVP_DigestUpdate() failed");
+        goto failed;
+    }
+
+    if (EVP_DigestFinal_ex(md, hash, NULL) == 0) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "EVP_DigestFinal_ex() failed");
+        goto failed;
+    }
+
+    EVP_MD_CTX_destroy(md);
+
+    v->data = ngx_pnalloc(r->pool, hash_len * 2);
+    if (v->data == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_hex_dump(v->data, hash, hash_len);
+    v->len = hash_len * 2;
+
+    return NGX_OK;
+
+failed:
+
+    EVP_MD_CTX_destroy(md);
+
+    return NGX_ERROR;
 }
 
 
@@ -4367,7 +4303,11 @@ static ngx_int_t
 ngx_http_var_hmac_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
 {
-    const EVP_MD  *evp_md;
+    ngx_http_complex_value_t  *args;
+    ngx_str_t                  val_src, val_secret;
+    const EVP_MD              *evp_md;
+    unsigned int               md_len;
+    unsigned char              md[EVP_MAX_MD_SIZE];
 
     switch (rule->func->type) {
 
@@ -4399,7 +4339,34 @@ ngx_http_var_hmac_handler(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    return ngx_http_var_helper_hmac(r, v, rule, evp_md);
+    args = rule->args->elts;
+
+    if (ngx_http_complex_value(r, &args[0], &val_src) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_complex_value(r, &args[1], &val_secret) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    md_len = 0;
+
+    HMAC(evp_md, val_secret.data, val_secret.len,
+         val_src.data, val_src.len, md, &md_len);
+
+    if (md_len == 0 || md_len > EVP_MAX_MD_SIZE) {
+        return NGX_ERROR;
+    }
+
+    v->data = ngx_pnalloc(r->pool, md_len);
+    if (v->data == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(v->data, &md, md_len);
+    v->len = md_len;
+
+    return NGX_OK;
 }
 
 #endif
