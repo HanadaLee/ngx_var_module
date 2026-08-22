@@ -73,7 +73,7 @@ The following optional build dependencies control whether their corresponding
 | Dependency | Required by `var` functions |
 | --- | --- |
 | OpenSSL (`NGX_OPENSSL`) | `sha224`, `sha256`, `sha384`, `sha512`, `hmac_md5`, `hmac_sha1`, `hmac_sha224`, `hmac_sha256`, `hmac_sha384`, `hmac_sha512` |
-| PCRE/PCRE2 (`NGX_PCRE`) | `regex_capture`, `regex_sub` |
+| PCRE/PCRE2 (`NGX_PCRE`) | `regex_capture`, `regex_sub`, `regex_gsub` |
 | cJSON (`NGX_CJSON`) | `extract_json` |
 
 If a dependency is unavailable, its functions are not registered and
@@ -265,6 +265,9 @@ var $new_var regex_capture [-i] src_str regex assign_value;
 
 # Substitute regex (requires PCRE/PCRE2)
 var $new_var regex_sub [-i] src_str regex replacement;
+
+# Globally substitute regex (requires PCRE/PCRE2)
+var $new_var regex_gsub [-i] src_str regex replacement;
 
 
 ### Mathematical Operations ####

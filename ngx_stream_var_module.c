@@ -60,6 +60,7 @@ typedef enum {
 #if (NGX_PCRE)
     NGX_STREAM_VAR_FUNC_REGEX_CAPTURE,
     NGX_STREAM_VAR_FUNC_REGEX_SUB,
+    NGX_STREAM_VAR_FUNC_REGEX_GSUB,
 #endif
 
     NGX_STREAM_VAR_FUNC_ABS,
@@ -179,6 +180,18 @@ typedef struct {
 } ngx_stream_var_ctx_t;
 
 
+#if (NGX_PCRE)
+
+typedef struct {
+    ngx_uint_t                     captures_size;
+#if (NGX_PCRE2)
+    pcre2_match_data              *match_data;
+#endif
+} ngx_stream_var_regex_exec_t;
+
+#endif
+
+
 struct ngx_stream_var_func_s {
     ngx_str_t                      name;        /* function name */
     ngx_stream_var_func_pt         handler;     /* function handler */
@@ -224,6 +237,17 @@ static ngx_int_t ngx_stream_var_select_rule(ngx_stream_session_t *s,
 static ngx_int_t ngx_stream_var_variable_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, uintptr_t data);
 
+#if (NGX_PCRE)
+static ngx_int_t ngx_stream_var_helper_regex_init(ngx_stream_session_t *s,
+    ngx_stream_var_regex_exec_t *ctx);
+static ngx_int_t ngx_stream_var_helper_regex_exec(ngx_stream_session_t *s,
+    ngx_stream_regex_t *re, ngx_str_t *str, size_t start_offset,
+    ngx_stream_var_regex_exec_t *ctx);
+static void ngx_stream_var_helper_regex_cleanup(
+    ngx_stream_var_regex_exec_t *ctx);
+static ngx_int_t ngx_stream_var_helper_add_part(ngx_array_t *parts,
+    u_char *data, size_t len, size_t *total);
+#endif
 static ngx_int_t ngx_stream_var_helper_check_str_is_num(ngx_str_t val);
 static ngx_int_t ngx_stream_var_helper_auto_atoi(ngx_str_t val,
     ngx_int_t *int_val);
@@ -271,6 +295,8 @@ static ngx_int_t ngx_stream_var_extract_json_handler(ngx_stream_session_t *s,
 static ngx_int_t ngx_stream_var_regex_capture_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 static ngx_int_t ngx_stream_var_regex_sub_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_regex_gsub_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 #endif
 
@@ -437,6 +463,11 @@ static ngx_stream_var_func_t  ngx_stream_var_funcs[] = {
     { ngx_string("regex_sub"),
       ngx_stream_var_regex_sub_handler,
       NGX_STREAM_VAR_FUNC_REGEX_SUB,
+      3, 3 },
+
+    { ngx_string("regex_gsub"),
+      ngx_stream_var_regex_gsub_handler,
+      NGX_STREAM_VAR_FUNC_REGEX_GSUB,
       3, 3 },
 #endif
 
@@ -1066,7 +1097,8 @@ ngx_stream_var_parser(ngx_conf_t *cf, ngx_stream_var_func_t *func,
 #if (NGX_PCRE)
 
     if (func->type == NGX_STREAM_VAR_FUNC_REGEX_CAPTURE
-        || func->type == NGX_STREAM_VAR_FUNC_REGEX_SUB)
+        || func->type == NGX_STREAM_VAR_FUNC_REGEX_SUB
+        || func->type == NGX_STREAM_VAR_FUNC_REGEX_GSUB)
     {
         return ngx_stream_var_compile_regex(cf, rule, &value[first]);
     }
@@ -1201,7 +1233,6 @@ ngx_stream_var_compile_regex(ngx_conf_t *cf,
 {
     ngx_stream_complex_value_t  *cv;
     ngx_regex_compile_t          rc;
-    ngx_str_t                    regex;
     u_char                       errstr[NGX_MAX_CONF_ERRSTR];
 
     rule->args = ngx_array_create(cf->pool, 2,
@@ -1221,24 +1252,9 @@ ngx_stream_var_compile_regex(ngx_conf_t *cf,
         return NGX_ERROR;
     }
 
-    if (rule->func->type == NGX_STREAM_VAR_FUNC_REGEX_SUB) {
-        regex.len = value[1].len + 2;
-        regex.data = ngx_pnalloc(cf->pool, regex.len + 1);
-        if (regex.data == NULL) {
-            return NGX_ERROR;
-        }
-
-        ngx_memcpy(regex.data, value[1].data, value[1].len);
-        ngx_memcpy(regex.data + value[1].len, "()", 2);
-        regex.data[regex.len] = '\0';
-
-    } else {
-        regex = value[1];
-    }
-
     ngx_memzero(&rc, sizeof(ngx_regex_compile_t));
 
-    rc.pattern = regex;
+    rc.pattern = value[1];
     rc.pool = cf->pool;
     rc.err.len = NGX_MAX_CONF_ERRSTR;
     rc.err.data = errstr;
@@ -1536,6 +1552,140 @@ ngx_stream_var_variable_handler(ngx_stream_session_t *s,
 
     return NGX_OK;
 }
+
+
+#if (NGX_PCRE)
+
+static ngx_int_t
+ngx_stream_var_helper_regex_init(ngx_stream_session_t *s,
+    ngx_stream_var_regex_exec_t *ctx)
+{
+    ngx_stream_core_main_conf_t  *cmcf;
+
+    cmcf = ngx_stream_get_module_main_conf(s, ngx_stream_core_module);
+
+    ctx->captures_size = ngx_max(cmcf->ncaptures, 3);
+
+    if (s->captures == NULL) {
+        s->captures = ngx_palloc(s->connection->pool,
+                                 ctx->captures_size * sizeof(int));
+        if (s->captures == NULL) {
+            return NGX_ERROR;
+        }
+    }
+
+#if (NGX_PCRE2)
+    ctx->match_data = pcre2_match_data_create(ctx->captures_size / 3, NULL);
+    if (ctx->match_data == NULL) {
+        return NGX_ERROR;
+    }
+#endif
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_stream_var_helper_regex_exec(ngx_stream_session_t *s,
+    ngx_stream_regex_t *re, ngx_str_t *str, size_t start_offset,
+    ngx_stream_var_regex_exec_t *ctx)
+{
+    ngx_int_t                     rc, index;
+    ngx_uint_t                    i, n;
+    ngx_stream_variable_value_t  *vv;
+
+#if (NGX_PCRE2)
+    size_t      *ov;
+    ngx_uint_t   captures;
+
+    rc = pcre2_match(re->regex, str->data, str->len, start_offset, 0,
+                     ctx->match_data, NULL);
+
+    if (rc >= 0) {
+        captures = pcre2_get_ovector_count(ctx->match_data);
+        captures = ngx_min(captures, ctx->captures_size / 3);
+        ov = pcre2_get_ovector_pointer(ctx->match_data);
+
+        for (i = 0; i < captures; i++) {
+            s->captures[i * 2] = ov[i * 2];
+            s->captures[i * 2 + 1] = ov[i * 2 + 1];
+        }
+    }
+#else
+    rc = pcre_exec(re->regex->code, re->regex->extra,
+                   (const char *) str->data, str->len, start_offset, 0,
+                   s->captures, ctx->captures_size);
+#endif
+
+    if (rc == NGX_REGEX_NO_MATCHED) {
+        return NGX_DECLINED;
+    }
+
+    if (rc < 0) {
+        ngx_log_error(NGX_LOG_ALERT, s->connection->log, 0,
+                      ngx_regex_exec_n " failed: %i on \"%V\" using \"%V\"",
+                      rc, str, &re->name);
+        return NGX_ERROR;
+    }
+
+    for (i = 0; i < re->nvariables; i++) {
+        n = re->variables[i].capture;
+        index = re->variables[i].index;
+        vv = &s->variables[index];
+
+        vv->len = s->captures[n + 1] - s->captures[n];
+        vv->valid = 1;
+        vv->no_cacheable = 0;
+        vv->not_found = 0;
+        vv->data = &str->data[s->captures[n]];
+    }
+
+    s->ncaptures = rc * 2;
+    s->captures_data = str->data;
+
+    return NGX_OK;
+}
+
+
+static void
+ngx_stream_var_helper_regex_cleanup(ngx_stream_var_regex_exec_t *ctx)
+{
+#if (NGX_PCRE2)
+    pcre2_match_data_free(ctx->match_data);
+#else
+    (void) ctx;
+#endif
+}
+
+
+static ngx_int_t
+ngx_stream_var_helper_add_part(ngx_array_t *parts, u_char *data, size_t len,
+    size_t *total)
+{
+    ngx_str_t  *part;
+
+    if (len == 0) {
+        return NGX_OK;
+    }
+
+    if (*total > NGX_MAX_SIZE_T_VALUE - len) {
+        return NGX_ERROR;
+    }
+
+    part = ngx_array_push(parts);
+    if (part == NULL) {
+        return NGX_ERROR;
+    }
+
+    part->data = data;
+    part->len = len;
+    *total += len;
+
+    return NGX_OK;
+}
+
+
+#endif
 
 
 static ngx_int_t
@@ -3008,11 +3158,12 @@ static ngx_int_t
 ngx_stream_var_regex_sub_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
 {
-    ngx_stream_complex_value_t    *args;
-    ngx_str_t                      val, replacement;
-    ngx_int_t                      rc;
-    u_char                        *p;
-    ngx_uint_t                     start, end, len;
+    ngx_stream_complex_value_t   *args;
+    ngx_stream_var_regex_exec_t   ctx;
+    ngx_str_t                     val, replacement;
+    ngx_int_t                     rc, capture_start, capture_end;
+    u_char                       *p;
+    size_t                        start, end, len;
 
     args = rule->args->elts;
 
@@ -3020,15 +3171,21 @@ ngx_stream_var_regex_sub_handler(ngx_stream_session_t *s,
         return NGX_ERROR;
     }
 
-    rc = ngx_stream_regex_exec(s, rule->regex, &val);
+    if (ngx_stream_var_helper_regex_init(s, &ctx) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    rc = ngx_stream_var_helper_regex_exec(s, rule->regex, &val, 0, &ctx);
 
     if (rc == NGX_DECLINED) {
+        ngx_stream_var_helper_regex_cleanup(&ctx);
         v->len = val.len;
         v->data = val.data;
         return NGX_OK;
     }
 
     if (rc != NGX_OK) {
+        ngx_stream_var_helper_regex_cleanup(&ctx);
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var %V: regex substitution failed",
                       &rule->func->name);
@@ -3037,20 +3194,49 @@ ngx_stream_var_regex_sub_handler(ngx_stream_session_t *s,
 
     /* ensure captures are available */
     if (s->ncaptures < 2) {
+        ngx_stream_var_helper_regex_cleanup(&ctx);
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
                       "var %V: insufficient captures",
                       &rule->func->name);
         return NGX_ERROR;
     }
 
-    if (ngx_stream_complex_value(s, &args[1], &replacement) != NGX_OK) {
+    capture_start = s->captures[0];
+    capture_end = s->captures[1];
+
+    if (capture_start < 0 || capture_end < capture_start
+        || (size_t) capture_end > val.len)
+    {
+        ngx_stream_var_helper_regex_cleanup(&ctx);
+        ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
+                      "var %V: invalid capture offsets",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
-    start = s->captures[0];
-    end = s->captures[1];
+    if (ngx_stream_complex_value(s, &args[1], &replacement) != NGX_OK) {
+        ngx_stream_var_helper_regex_cleanup(&ctx);
+        return NGX_ERROR;
+    }
 
-    len = start + replacement.len + (val.len - end);
+    ngx_stream_var_helper_regex_cleanup(&ctx);
+
+    start = capture_start;
+    end = capture_end;
+
+    if (replacement.len > NGX_MAX_SIZE_T_VALUE - start
+        || val.len - end > NGX_MAX_SIZE_T_VALUE - start - replacement.len)
+    {
+        return NGX_ERROR;
+    }
+
+    len = start + replacement.len + val.len - end;
+
+    if (len == 0) {
+        v->len = 0;
+        v->data = (u_char *) "";
+        return NGX_OK;
+    }
 
     p = ngx_pnalloc(s->connection->pool, len);
     if (p == NULL) {
@@ -3066,6 +3252,143 @@ ngx_stream_var_regex_sub_handler(ngx_stream_session_t *s,
     v->len = p - v->data;
 
     return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_stream_var_regex_gsub_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
+{
+    ngx_array_t                   parts;
+    ngx_stream_complex_value_t   *args;
+    ngx_stream_var_regex_exec_t   ctx;
+    ngx_str_t                    *part;
+    ngx_str_t                     val, replacement;
+    ngx_int_t                     rc, capture_start, capture_end;
+    ngx_uint_t                    i, matched;
+    u_char                       *p;
+    size_t                        copy_offset, end, search_offset;
+    size_t                        start, total;
+
+    args = rule->args->elts;
+
+    if (ngx_stream_complex_value(s, &args[0], &val) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_array_init(&parts, s->connection->pool, 8, sizeof(ngx_str_t))
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    if (ngx_stream_var_helper_regex_init(s, &ctx) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    copy_offset = 0;
+    search_offset = 0;
+    total = 0;
+    matched = 0;
+
+    for ( ;; ) {
+        rc = ngx_stream_var_helper_regex_exec(s, rule->regex, &val,
+                                               search_offset, &ctx);
+
+        if (rc == NGX_DECLINED) {
+            break;
+        }
+
+        if (rc != NGX_OK || s->ncaptures < 2) {
+            goto failed;
+        }
+
+        capture_start = s->captures[0];
+        capture_end = s->captures[1];
+
+        if (capture_start < 0 || capture_end < capture_start
+            || (size_t) capture_start < copy_offset
+            || (size_t) capture_end > val.len)
+        {
+            goto failed;
+        }
+
+        start = capture_start;
+        end = capture_end;
+
+        if (ngx_stream_complex_value(s, &args[1], &replacement) != NGX_OK) {
+            goto failed;
+        }
+
+        if (ngx_stream_var_helper_add_part(&parts, val.data + copy_offset,
+                                           start - copy_offset, &total)
+            != NGX_OK
+            || ngx_stream_var_helper_add_part(&parts, replacement.data,
+                                               replacement.len, &total)
+               != NGX_OK)
+        {
+            goto failed;
+        }
+
+        matched = 1;
+        copy_offset = end;
+        search_offset = end;
+
+        if (start == end) {
+            search_offset++;
+
+            if (search_offset > val.len) {
+                break;
+            }
+        }
+    }
+
+    ngx_stream_var_helper_regex_cleanup(&ctx);
+
+    if (!matched) {
+        v->len = val.len;
+        v->data = val.data;
+        return NGX_OK;
+    }
+
+    if (ngx_stream_var_helper_add_part(&parts, val.data + copy_offset,
+                                       val.len - copy_offset, &total)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    if (total == 0) {
+        v->len = 0;
+        v->data = (u_char *) "";
+        return NGX_OK;
+    }
+
+    p = ngx_pnalloc(s->connection->pool, total);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    v->data = p;
+    part = parts.elts;
+
+    for (i = 0; i < parts.nelts; i++) {
+        p = ngx_cpymem(p, part[i].data, part[i].len);
+    }
+
+    v->len = total;
+
+    return NGX_OK;
+
+failed:
+
+    ngx_stream_var_helper_regex_cleanup(&ctx);
+
+    ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
+                  "var %V: regex substitution failed",
+                  &rule->func->name);
+
+    return NGX_ERROR;
 }
 
 #endif
