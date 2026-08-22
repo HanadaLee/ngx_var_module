@@ -173,6 +173,11 @@ var $new_var set src_str;
 # Length of the string
 var $new_var len src_str;
 
+# Read up to the first 1024 bytes of a file
+# Relative paths are resolved against the nginx prefix
+# Missing files and directories produce an empty result
+var $new_var file path;
+
 # Convert to uppercase
 var $new_var upper src_str;
 

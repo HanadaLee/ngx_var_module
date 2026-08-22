@@ -24,6 +24,7 @@
 #endif
 
 
+#define NGX_STREAM_VAR_FILE_MAX  1024
 #define NGX_STREAM_VAR_NO_ARGS   0
 #define NGX_STREAM_VAR_MAX_ARGS  (ngx_uint_t) -1
 
@@ -35,6 +36,7 @@
 typedef enum {
     NGX_STREAM_VAR_FUNC_SET = 0,
     NGX_STREAM_VAR_FUNC_LEN,
+    NGX_STREAM_VAR_FUNC_FILE,
     NGX_STREAM_VAR_FUNC_UPPER,
     NGX_STREAM_VAR_FUNC_LOWER,
     NGX_STREAM_VAR_FUNC_INITCAP,
@@ -227,6 +229,8 @@ static ngx_int_t ngx_stream_var_set_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 static ngx_int_t ngx_stream_var_len_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_file_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 static ngx_int_t ngx_stream_var_case_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 static ngx_int_t ngx_stream_var_initcap_handler(ngx_stream_session_t *s,
@@ -330,6 +334,11 @@ static ngx_stream_var_func_t  ngx_stream_var_funcs[] = {
     { ngx_string("len"),
       ngx_stream_var_len_handler,
       NGX_STREAM_VAR_FUNC_LEN,
+      1, 1 },
+
+    { ngx_string("file"),
+      ngx_stream_var_file_handler,
+      NGX_STREAM_VAR_FUNC_FILE,
       1, 1 },
 
     { ngx_string("upper"),
@@ -1705,6 +1714,84 @@ ngx_stream_var_len_handler(ngx_stream_session_t *s,
     }
 
     v->len = ngx_sprintf(p, "%uz", val.len) - p;
+    v->data = p;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_stream_var_file_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
+{
+    size_t                      size;
+    ssize_t                     n;
+    u_char                     *p;
+    ngx_str_t                   val, path;
+    ngx_file_t                  file;
+    ngx_open_file_info_t        of;
+    ngx_stream_complex_value_t *args;
+
+    args = rule->args->elts;
+
+    if (ngx_stream_complex_value(s, &args[0], &val) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    path.len = val.len;
+    path.data = ngx_pnalloc(s->connection->pool, path.len + 1);
+    if (path.data == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(path.data, val.data, val.len);
+    path.data[path.len] = '\0';
+
+    if (ngx_get_full_name(s->connection->pool,
+                          (ngx_str_t *) &ngx_cycle->prefix, &path)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    ngx_memzero(&of, sizeof(ngx_open_file_info_t));
+    of.directio = NGX_OPEN_FILE_DIRECTIO_OFF;
+
+    if (ngx_open_cached_file(NULL, &path, &of, s->connection->pool)
+        != NGX_OK)
+    {
+        ngx_log_debug2(NGX_LOG_DEBUG_STREAM, s->connection->log, of.err,
+                       "var %V: open \"%s\" failed",
+                       &rule->func->name, path.data);
+        return NGX_DECLINED;
+    }
+
+    if (of.is_dir) {
+        ngx_log_debug2(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
+                       "var %V: \"%s\" is a directory",
+                       &rule->func->name, path.data);
+        return NGX_DECLINED;
+    }
+
+    size = ngx_min(of.size, NGX_STREAM_VAR_FILE_MAX);
+
+    p = ngx_pnalloc(s->connection->pool, size);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memzero(&file, sizeof(ngx_file_t));
+
+    file.fd = of.fd;
+    file.name = path;
+    file.log = s->connection->log;
+
+    n = ngx_read_file(&file, p, size, 0);
+    if (n == NGX_ERROR) {
+        return NGX_ERROR;
+    }
+
+    v->len = n;
     v->data = p;
 
     return NGX_OK;

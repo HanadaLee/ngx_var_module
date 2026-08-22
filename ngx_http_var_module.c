@@ -24,6 +24,7 @@
 #endif
 
 
+#define NGX_HTTP_VAR_FILE_MAX  1024
 #define NGX_HTTP_VAR_NO_ARGS   0
 #define NGX_HTTP_VAR_MAX_ARGS  (ngx_uint_t) -1
 
@@ -35,6 +36,7 @@
 typedef enum {
     NGX_HTTP_VAR_FUNC_SET = 0,
     NGX_HTTP_VAR_FUNC_LEN,
+    NGX_HTTP_VAR_FUNC_FILE,
     NGX_HTTP_VAR_FUNC_UPPER,
     NGX_HTTP_VAR_FUNC_LOWER,
     NGX_HTTP_VAR_FUNC_INITCAP,
@@ -227,6 +229,8 @@ static ngx_int_t ngx_http_var_set_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_len_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
+static ngx_int_t ngx_http_var_file_handler(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_case_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_initcap_handler(ngx_http_request_t *r,
@@ -330,6 +334,11 @@ static ngx_http_var_func_t  ngx_http_var_funcs[] = {
     { ngx_string("len"),
       ngx_http_var_len_handler,
       NGX_HTTP_VAR_FUNC_LEN,
+      1, 1 },
+
+    { ngx_string("file"),
+      ngx_http_var_file_handler,
+      NGX_HTTP_VAR_FUNC_FILE,
       1, 1 },
 
     { ngx_string("upper"),
@@ -1708,6 +1717,96 @@ ngx_http_var_len_handler(ngx_http_request_t *r,
     }
 
     v->len = ngx_sprintf(p, "%uz", val.len) - p;
+    v->data = p;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_var_file_handler(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
+{
+    size_t                     size;
+    ssize_t                    n;
+    u_char                    *p;
+    ngx_str_t                  val, path;
+    ngx_file_t                 file;
+    ngx_open_file_info_t       of;
+    ngx_http_complex_value_t  *args;
+    ngx_http_core_loc_conf_t  *clcf;
+
+    args = rule->args->elts;
+
+    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    path.len = val.len;
+    path.data = ngx_pnalloc(r->pool, path.len + 1);
+    if (path.data == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(path.data, val.data, val.len);
+    path.data[path.len] = '\0';
+
+    if (ngx_get_full_name(r->pool, (ngx_str_t *) &ngx_cycle->prefix, &path)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+
+    ngx_memzero(&of, sizeof(ngx_open_file_info_t));
+
+    of.read_ahead = clcf->read_ahead;
+    of.directio = clcf->directio;
+    of.valid = clcf->open_file_cache_valid;
+    of.min_uses = clcf->open_file_cache_min_uses;
+    of.errors = clcf->open_file_cache_errors;
+    of.events = clcf->open_file_cache_events;
+
+    if (ngx_http_set_disable_symlinks(r, clcf, &path, &of) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_open_cached_file(clcf->open_file_cache, &path, &of, r->pool)
+        != NGX_OK)
+    {
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, of.err,
+                       "var %V: open \"%s\" failed",
+                       &rule->func->name, path.data);
+        return NGX_DECLINED;
+    }
+
+    if (of.is_dir) {
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "var %V: \"%s\" is a directory",
+                       &rule->func->name, path.data);
+        return NGX_DECLINED;
+    }
+
+    size = ngx_min(of.size, NGX_HTTP_VAR_FILE_MAX);
+
+    p = ngx_pnalloc(r->pool, size);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memzero(&file, sizeof(ngx_file_t));
+
+    file.fd = of.fd;
+    file.name = path;
+    file.log = r->connection->log;
+
+    n = ngx_read_file(&file, p, size, 0);
+    if (n == NGX_ERROR) {
+        return NGX_ERROR;
+    }
+
+    v->len = n;
     v->data = p;
 
     return NGX_OK;
