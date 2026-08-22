@@ -1858,7 +1858,8 @@ ngx_stream_var_trim_handler(ngx_stream_session_t *s,
 
         if (trim.len != 1) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: invalid trim char");
+                          "var %V: invalid trim character",
+                          &rule->func->name);
             return NGX_ERROR;
         }
 
@@ -2015,7 +2016,8 @@ ngx_stream_var_repeat_handler(ngx_stream_session_t *s,
     n = ngx_atoi(count.data, count.len);
     if (n == NGX_ERROR) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid repeat times \"%V\"", &count);
+                      "var %V: invalid repeat count \"%V\"",
+                      &rule->func->name, &count);
         return NGX_ERROR;
     }
 
@@ -2060,7 +2062,8 @@ ngx_stream_var_substr_handler(ngx_stream_session_t *s,
     start = ngx_atoi(start_arg.data, start_arg.len);
     if (start == NGX_ERROR) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid start \"%V\" in substr", &start_arg);
+                      "var %V: invalid start \"%V\"",
+                      &rule->func->name, &start_arg);
         return NGX_ERROR;
     }
 
@@ -2076,8 +2079,8 @@ ngx_stream_var_substr_handler(ngx_stream_session_t *s,
         len = ngx_atoi(length_arg.data, length_arg.len);
         if (len == NGX_ERROR) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: invalid length \"%V\" in substr",
-                          &length_arg);
+                          "var %V: invalid length \"%V\"",
+                          &rule->func->name, &length_arg);
             return NGX_ERROR;
         }
 
@@ -2120,7 +2123,8 @@ ngx_stream_var_replace_handler(ngx_stream_session_t *s,
 
     if (search.len == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: search string is empty in replace");
+                      "var %V: search string is empty",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -2158,7 +2162,8 @@ ngx_stream_var_replace_handler(ngx_stream_session_t *s,
 
     if (new_len > NGX_MAX_SIZE_T_VALUE) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: replacement result too large");
+                      "var %V: replacement result too large",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -2235,8 +2240,8 @@ ngx_stream_var_extract_param_handler(ngx_stream_session_t *s,
 
     if (separator.len != 1) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid separator: \"%V\"",
-                      &separator);
+                      "var %V: invalid separator \"%V\"",
+                      &rule->func->name, &separator);
         v->not_found = 1;
         return NGX_OK;
     }
@@ -2247,8 +2252,8 @@ ngx_stream_var_extract_param_handler(ngx_stream_session_t *s,
 
     if (delimiter.len != 1) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid delimiter: \"%V\"",
-                      &delimiter);
+                      "var %V: invalid delimiter \"%V\"",
+                      &rule->func->name, &delimiter);
         v->not_found = 1;
         return NGX_OK;
     }
@@ -2379,15 +2384,15 @@ ngx_stream_var_params_handler(ngx_stream_session_t *s,
     /* separator and delimiter are required */
     if (key_elts[1].len != 1) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid separator: \"%V\"",
-                      &key_elts[1]);
+                      "var %V: invalid separator \"%V\"",
+                      &rule->func->name, &key_elts[1]);
         goto return_original;
     }
 
     if (key_elts[2].len != 1) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid delimiter: \"%V\"",
-                      &key_elts[2]);
+                      "var %V: invalid delimiter \"%V\"",
+                      &rule->func->name, &key_elts[2]);
         goto return_original;
     }
 
@@ -2630,7 +2635,8 @@ ngx_stream_var_extract_json_handler(ngx_stream_session_t *s,
     json = cJSON_Parse((char *) json_data);
     if (json == NULL) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid json string");
+                      "var %V: input is not valid JSON",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -2766,7 +2772,8 @@ not_found:
 failed:
 
     ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                  "var: extract json string failed");
+                  "var %V: failed to extract JSON value",
+                  &rule->func->name);
 
     cJSON_Delete(json);
 
@@ -2802,7 +2809,8 @@ ngx_stream_var_regex_capture_handler(ngx_stream_session_t *s,
 
     if (rc != NGX_OK) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: regex match failed");
+                      "var %V: regex match failed",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -2843,14 +2851,16 @@ ngx_stream_var_regex_sub_handler(ngx_stream_session_t *s,
 
     if (rc != NGX_OK) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: regex substitution failed");
+                      "var %V: regex substitution failed",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
     /* ensure captures are available */
     if (s->ncaptures < 2) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: insufficient captures");
+                      "var %V: insufficient captures",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -2931,7 +2941,7 @@ ngx_stream_var_minmax_handler(ngx_stream_session_t *s,
         != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: \"%V\" failed to convert values to fixed point",
+                      "var %V: failed to convert operands to fixed point",
                       &rule->func->name);
         return NGX_ERROR;
     }
@@ -2971,7 +2981,7 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
         || ngx_stream_var_helper_auto_atoi(right, &b) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid integer value for \"%V\" function",
+                      "var %V: invalid integer operand",
                       &rule->func->name);
         return NGX_ERROR;
     }
@@ -2981,7 +2991,7 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
     case NGX_STREAM_VAR_FUNC_ADD:
         if (b > 0 && a > NGX_MAX_INT_T_VALUE - b) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: integer overflow in \"%V\" function",
+                          "var %V: integer overflow",
                           &rule->func->name);
             return NGX_ERROR;
         }
@@ -2990,7 +3000,7 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
             && a < -NGX_MAX_INT_T_VALUE - b)
         {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: integer underflow in \"%V\" function",
+                          "var %V: integer underflow",
                           &rule->func->name);
             return NGX_ERROR;
         }
@@ -3001,7 +3011,7 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
     case NGX_STREAM_VAR_FUNC_SUB:
         if (b < 0 && a > NGX_MAX_INT_T_VALUE + b) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: integer overflow in \"%V\" function",
+                          "var %V: integer overflow",
                           &rule->func->name);
             return NGX_ERROR;
         }
@@ -3010,7 +3020,7 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
             && a < -NGX_MAX_INT_T_VALUE + b)
         {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: integer underflow in \"%V\" function",
+                          "var %V: integer underflow",
                           &rule->func->name);
             return NGX_ERROR;
         }
@@ -3025,7 +3035,7 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
                 && a > NGX_MAX_INT_T_VALUE / b)
             {
                 ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                              "var: integer overflow in \"%V\" function",
+                              "var %V: integer overflow",
                               &rule->func->name);
                 return NGX_ERROR;
             }
@@ -3034,7 +3044,7 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
                 && b < -NGX_MAX_INT_T_VALUE / a)
             {
                 ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                              "var: integer underflow in \"%V\" function",
+                              "var %V: integer underflow",
                               &rule->func->name);
                 return NGX_ERROR;
             }
@@ -3045,7 +3055,7 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
                 && a < -NGX_MAX_INT_T_VALUE / b)
             {
                 ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                              "var: integer underflow in \"%V\" function",
+                              "var %V: integer underflow",
                               &rule->func->name);
                 return NGX_ERROR;
             }
@@ -3054,7 +3064,7 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
                 && a < NGX_MAX_INT_T_VALUE / b)
             {
                 ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                              "var: integer overflow in \"%V\" function",
+                              "var %V: integer overflow",
                               &rule->func->name);
                 return NGX_ERROR;
             }
@@ -3066,7 +3076,7 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
     case NGX_STREAM_VAR_FUNC_DIV:
         if (b == 0) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: division by zero in \"%V\" function",
+                          "var %V: division by zero",
                           &rule->func->name);
             return NGX_ERROR;
         }
@@ -3077,7 +3087,7 @@ ngx_stream_var_arith_handler(ngx_stream_session_t *s,
     case NGX_STREAM_VAR_FUNC_MOD:
         if (b == 0) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: modulo by zero in \"%V\" function",
+                          "var %V: modulo by zero",
                           &rule->func->name);
             return NGX_ERROR;
         }
@@ -3122,7 +3132,8 @@ ngx_stream_var_bitwise_handler(ngx_stream_session_t *s,
         || ngx_stream_var_helper_auto_atoi(right, &b) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid integer value");
+                      "var %V: invalid integer operand",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -3173,7 +3184,8 @@ ngx_stream_var_bitwise_not_handler(ngx_stream_session_t *s,
 
     if (ngx_stream_var_helper_auto_atoi(val, &n) != NGX_OK) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid integer value");
+                      "var %V: invalid integer operand",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -3208,20 +3220,23 @@ ngx_stream_var_shift_handler(ngx_stream_session_t *s,
 
     if (ngx_stream_var_helper_auto_atoi(val, &n) != NGX_OK) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid integer value");
+                      "var %V: invalid integer operand",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
     bits = ngx_atoi(shift.data, shift.len);
     if (bits == NGX_ERROR) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid shift bits");
+                      "var %V: invalid shift bits",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
     if (bits >= (ngx_int_t) (sizeof(ngx_int_t) * 8)) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: shift bits too large");
+                      "var %V: shift bits too large",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -3285,8 +3300,8 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
         precision = ngx_atoi(precision_arg.data, precision_arg.len);
         if (precision == NGX_ERROR || precision < 0) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: invalid precision value for "
-                          "\"round\" function");
+                          "var %V: invalid precision",
+                          &rule->func->name);
             return NGX_ERROR;
         }
     }
@@ -3296,7 +3311,7 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
 
     if (number_len == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: empty input for \"%V\" function",
+                      "var %V: input is empty",
                       &rule->func->name);
         return NGX_ERROR;
     }
@@ -3311,7 +3326,8 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
 
     if (number_len == 0 || number[0] == '.') {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid number format");
+                      "var %V: invalid number format",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -3323,7 +3339,8 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
 
             if (decimal_point != -1) {
                 ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                              "var: multiple decimal points found");
+                              "var %V: input contains multiple decimal points",
+                              &rule->func->name);
                 return NGX_ERROR;
             }
 
@@ -3331,7 +3348,8 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
 
         } else if (number[i] < '0' || number[i] > '9') {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: invalid character in number");
+                          "var %V: input contains a non-numeric character",
+                          &rule->func->name);
             return NGX_ERROR;
         }
     }
@@ -3348,7 +3366,8 @@ ngx_stream_var_round_handler(ngx_stream_session_t *s,
             && rule->func->type != NGX_STREAM_VAR_FUNC_TRUNC)
         {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: decimal point at the end of number");
+                          "var %V: input ends with a decimal point",
+                          &rule->func->name);
             return NGX_ERROR;
         }
 
@@ -3581,7 +3600,8 @@ ngx_stream_var_rand_handler(ngx_stream_session_t *s,
 
     if (range.len == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: empty argument for \"rand\"");
+                      "var %V: start argument is empty",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -3589,7 +3609,8 @@ ngx_stream_var_rand_handler(ngx_stream_session_t *s,
 
     if (start == NGX_ERROR) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid start value for \"rand\"");
+                      "var %V: invalid start value",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -3601,7 +3622,8 @@ ngx_stream_var_rand_handler(ngx_stream_session_t *s,
 
         if (range.len == 0) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: empty argument for \"rand\"");
+                          "var %V: end argument is empty",
+                          &rule->func->name);
             return NGX_ERROR;
         }
 
@@ -3609,7 +3631,8 @@ ngx_stream_var_rand_handler(ngx_stream_session_t *s,
 
         if (end == NGX_ERROR || start > end) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: invalid end value for \"rand\"");
+                          "var %V: invalid end value",
+                          &rule->func->name);
             return NGX_ERROR;
         }
 
@@ -3686,14 +3709,16 @@ ngx_stream_var_hexrand_handler(ngx_stream_session_t *s,
 
         if (length.len == 0) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: empty argument for \"hexrand\"");
+                          "var %V: length argument is empty",
+                          &rule->func->name);
             return NGX_ERROR;
         }
 
         n = ngx_atoi(length.data, length.len);
         if (n == NGX_ERROR || n <= 0 || n > 32) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: invalid length value for \"hexrand\"");
+                          "var %V: invalid length value",
+                          &rule->func->name);
             return NGX_ERROR;
         }
     }
@@ -3786,7 +3811,8 @@ ngx_stream_var_hex_decode_handler(ngx_stream_session_t *s,
 
     if (val.len % 2 != 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: \"hex_decode\" requires even-length string");
+                      "var %V: input length must be even",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -3802,7 +3828,8 @@ ngx_stream_var_hex_decode_handler(ngx_stream_session_t *s,
         byte = ngx_hextoi(p, 2);
         if (byte == NGX_ERROR || byte > 255) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: invalid value in \"hex_decode\"");
+                          "var %V: input contains invalid hexadecimal data",
+                          &rule->func->name);
             return NGX_ERROR;
         }
 
@@ -3832,7 +3859,8 @@ ngx_stream_var_itohex_handler(ngx_stream_session_t *s,
 
     if (val.len == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: empty input for \"itohex\"");
+                      "var %V: input is empty",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -3846,7 +3874,8 @@ ngx_stream_var_itohex_handler(ngx_stream_session_t *s,
     n = ngx_atoi(val.data, val.len);
     if (n == NGX_ERROR) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid decimal value for \"itohex\"");
+                      "var %V: input is not a valid decimal integer",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -3886,7 +3915,8 @@ ngx_stream_var_hextoi_handler(ngx_stream_session_t *s,
 
     if (val.len == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: empty input for \"hextoi\"");
+                      "var %V: input is empty",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -3900,7 +3930,8 @@ ngx_stream_var_hextoi_handler(ngx_stream_session_t *s,
     n = ngx_hextoi(val.data, val.len);
     if (n == NGX_ERROR) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid hex value for \"hextoi\"");
+                      "var %V: input is not a valid hexadecimal integer",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -4102,7 +4133,7 @@ ngx_stream_var_base64_decode_handler(ngx_stream_session_t *s,
 
     if (rc != NGX_OK) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: failed to decode string in \"%V\" function",
+                      "var %V: failed to decode input",
                       &rule->func->name);
         return NGX_ERROR;
     }
@@ -4262,19 +4293,22 @@ ngx_stream_var_sha_handler(ngx_stream_session_t *s,
 
     if (EVP_DigestInit_ex(md, evp_md, NULL) == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "EVP_DigestInit_ex() failed");
+                      "var %V: EVP_DigestInit_ex() failed",
+                      &rule->func->name);
         goto failed;
     }
 
     if (EVP_DigestUpdate(md, val.data, val.len) == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "EVP_DigestUpdate() failed");
+                      "var %V: EVP_DigestUpdate() failed",
+                      &rule->func->name);
         goto failed;
     }
 
     if (EVP_DigestFinal_ex(md, hash, NULL) == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "EVP_DigestFinal_ex() failed");
+                      "var %V: EVP_DigestFinal_ex() failed",
+                      &rule->func->name);
         goto failed;
     }
 
@@ -4402,7 +4436,8 @@ ngx_stream_var_gmt_time_handler(ngx_stream_session_t *s,
         ts = ngx_atoi(val.data, val.len);
         if (ts == NGX_ERROR) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: invalid unix_time value");
+                          "var %V: invalid Unix timestamp",
+                          &rule->func->name);
             return NGX_ERROR;
         }
 
@@ -4443,7 +4478,8 @@ ngx_stream_var_gmt_time_handler(ngx_stream_session_t *s,
 
     if (format.len >= sizeof(fmt)) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: time format too long");
+                      "var %V: format is too long",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -4467,7 +4503,8 @@ ngx_stream_var_gmt_time_handler(ngx_stream_session_t *s,
     v->len = strftime(buf, sizeof(buf), fmt, &tm);
     if (v->len == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: strftime failed");
+                      "var %V: strftime() failed",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -4512,7 +4549,8 @@ ngx_stream_var_local_time_handler(ngx_stream_session_t *s,
         ts = ngx_atoi(val.data, val.len);
         if (ts == NGX_ERROR) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: invalid unix_time value");
+                          "var %V: invalid Unix timestamp",
+                          &rule->func->name);
             return NGX_ERROR;
         }
 
@@ -4523,7 +4561,8 @@ ngx_stream_var_local_time_handler(ngx_stream_session_t *s,
 
     if (format.len >= sizeof(fmt)) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: date format too long");
+                      "var %V: format is too long",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -4548,7 +4587,8 @@ ngx_stream_var_local_time_handler(ngx_stream_session_t *s,
     v->len = strftime(buf, sizeof(buf), fmt, &tm);
     if (v->len == 0) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: strftime failed");
+                      "var %V: strftime() failed",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -4585,7 +4625,8 @@ ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
 
     if (rule->args->nelts == 1) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: illegal number of parameters");
+                      "var %V: invalid number of arguments",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -4603,7 +4644,8 @@ ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
         ts = ngx_parse_http_time(val.data, val.len);
         if (ts == NGX_ERROR) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: failed to parse http_time");
+                          "var %V: failed to parse HTTP time",
+                          &rule->func->name);
             return NGX_ERROR;
         }
 
@@ -4620,7 +4662,8 @@ ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
 
         if (ngx_strncasecmp(timezone.data, (u_char *) "gmt", 3) != 0) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: invalid timezone format");
+                          "var %V: invalid timezone format",
+                          &rule->func->name);
             return NGX_ERROR;
         }
 
@@ -4633,7 +4676,8 @@ ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
                 || (timezone.data[0] != '+' && timezone.data[0] != '-'))
             {
                 ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                              "var: invalid timezone format");
+                              "var %V: invalid timezone format",
+                              &rule->func->name);
                 return NGX_ERROR;
             }
 
@@ -4641,7 +4685,8 @@ ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
 
                 if (timezone.data[i] < '0' || timezone.data[i] > '9') {
                     ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                                  "var: invalid timezone offset value");
+                                  "var %V: invalid timezone offset value",
+                                  &rule->func->name);
                     return NGX_ERROR;
                 }
             }
@@ -4659,7 +4704,8 @@ ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
 
     if (format.len >= sizeof(buf)) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: date format too long");
+                      "var %V: format is too long",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -4670,7 +4716,8 @@ ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
 
     if (strptime((char *) val.data, buf, &tm) == NULL) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: failed to parse date string");
+                      "var %V: failed to parse date string",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
@@ -4720,7 +4767,8 @@ ngx_stream_var_cidr_handler(ngx_stream_session_t *s,
     ipv4_bits = ngx_atoi(bits.data, bits.len);
     if (ipv4_bits == NGX_ERROR || ipv4_bits == 0 || ipv4_bits > 32) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid IPv4 network bits: \"%V\"", &bits);
+                      "var %V: invalid IPv4 network bits \"%V\"",
+                      &rule->func->name, &bits);
         return NGX_ERROR;
     }
 
@@ -4733,7 +4781,8 @@ ngx_stream_var_cidr_handler(ngx_stream_session_t *s,
         ipv6_bits = ngx_atoi(bits.data, bits.len);
         if (ipv6_bits == NGX_ERROR || ipv6_bits == 0 || ipv6_bits > 128) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: invalid IPv6 network bits: \"%V\"", &bits);
+                          "var %V: invalid IPv6 network bits \"%V\"",
+                          &rule->func->name, &bits);
             return NGX_ERROR;
         }
 
@@ -4752,7 +4801,8 @@ ngx_stream_var_cidr_handler(ngx_stream_session_t *s,
         /* try to parse as IPv6 */
         if (ngx_inet6_addr(ip.data, ip.len, ipv6_buf) != NGX_OK) {
             ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                          "var: invalid IP address: \"%V\"", &ip);
+                          "var %V: invalid IP address \"%V\"",
+                          &rule->func->name, &ip);
             return NGX_ERROR;
         }
 
@@ -4806,7 +4856,8 @@ ngx_stream_var_cidr_handler(ngx_stream_session_t *s,
 
     if (ipv4_addr == INADDR_NONE) {
         ngx_log_error(NGX_LOG_WARN, s->connection->log, 0,
-                      "var: invalid IP address: \"%V\"", &ip);
+                      "var %V: invalid IP address \"%V\"",
+                      &rule->func->name, &ip);
         return NGX_ERROR;
     }
 
