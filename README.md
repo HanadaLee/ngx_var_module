@@ -291,7 +291,7 @@ var $new_var urshift int shift_bits;
 var $new_var round src_num int;
 
 # Truncate decimal part directly (no rounding)
-var $new_var int src_num;
+var $new_var trunc src_num;
 
 # Floor value, the largest integer less than or equal to the source
 var $new_var floor src_num;

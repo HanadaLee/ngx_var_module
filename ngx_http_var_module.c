@@ -75,7 +75,7 @@ typedef enum {
     NGX_HTTP_VAR_FUNC_RSHIFT,
     NGX_HTTP_VAR_FUNC_URSHIFT,
     NGX_HTTP_VAR_FUNC_ROUND,
-    NGX_HTTP_VAR_FUNC_INT,
+    NGX_HTTP_VAR_FUNC_TRUNC,
     NGX_HTTP_VAR_FUNC_FLOOR,
     NGX_HTTP_VAR_FUNC_CEIL,
     NGX_HTTP_VAR_FUNC_RAND,
@@ -200,11 +200,14 @@ static ngx_int_t ngx_http_var_select_rule(ngx_http_request_t *r,
 static ngx_int_t ngx_http_var_variable_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 
-static ngx_int_t ngx_http_var_helper_check_str_is_num(ngx_str_t num_str);
+static ngx_int_t ngx_http_var_helper_check_str_is_num(ngx_str_t val);
 static ngx_int_t ngx_http_var_helper_auto_atoi(ngx_str_t val,
     ngx_int_t *int_val);
 static ngx_int_t ngx_http_var_helper_auto_atofp(ngx_str_t val1, ngx_str_t val2,
     ngx_int_t *int_val1, ngx_int_t *int_val2);
+#if (nginx_version >= 1031003)
+static uint64_t ngx_http_var_helper_random64(void);
+#endif
 static ngx_int_t ngx_http_var_helper_escape_uri(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule,
     ngx_uint_t type);
@@ -227,17 +230,11 @@ static ngx_int_t ngx_http_var_set_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_len_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_upper_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_lower_handler(ngx_http_request_t *r,
+static ngx_int_t ngx_http_var_case_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_initcap_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_trim_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_ltrim_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_rtrim_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_reverse_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
@@ -269,41 +266,17 @@ static ngx_int_t ngx_http_var_regex_sub_handler(ngx_http_request_t *r,
 
 static ngx_int_t ngx_http_var_abs_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_max_handler(ngx_http_request_t *r,
+static ngx_int_t ngx_http_var_minmax_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_min_handler(ngx_http_request_t *r,
+static ngx_int_t ngx_http_var_arith_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_add_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_sub_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_mul_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_div_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_mod_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_bitwise_and_handler(ngx_http_request_t *r,
+static ngx_int_t ngx_http_var_bitwise_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_bitwise_not_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_bitwise_or_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_bitwise_xor_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_lshift_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_rshift_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_urshift_handler(ngx_http_request_t *r,
+static ngx_int_t ngx_http_var_shift_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_round_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_int_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_floor_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
-static ngx_int_t ngx_http_var_ceil_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_rand_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
@@ -364,12 +337,12 @@ static ngx_http_var_func_t  ngx_http_var_funcs[] = {
       1, 1 },
 
     { ngx_string("upper"),
-      ngx_http_var_upper_handler,
+      ngx_http_var_case_handler,
       NGX_HTTP_VAR_FUNC_UPPER,
       1, 1 },
 
     { ngx_string("lower"),
-      ngx_http_var_lower_handler,
+      ngx_http_var_case_handler,
       NGX_HTTP_VAR_FUNC_LOWER,
       1, 1 },
 
@@ -384,12 +357,12 @@ static ngx_http_var_func_t  ngx_http_var_funcs[] = {
       1, 2 },
 
     { ngx_string("ltrim"),
-      ngx_http_var_ltrim_handler,
+      ngx_http_var_trim_handler,
       NGX_HTTP_VAR_FUNC_LTRIM,
       1, 2 },
 
     { ngx_string("rtrim"),
-      ngx_http_var_rtrim_handler,
+      ngx_http_var_trim_handler,
       NGX_HTTP_VAR_FUNC_RTRIM,
       1, 2 },
 
@@ -458,42 +431,42 @@ static ngx_http_var_func_t  ngx_http_var_funcs[] = {
       1, 1 },
 
     { ngx_string("max"),
-      ngx_http_var_max_handler,
+      ngx_http_var_minmax_handler,
       NGX_HTTP_VAR_FUNC_MAX,
       2, 2 },
 
     { ngx_string("min"),
-      ngx_http_var_min_handler,
+      ngx_http_var_minmax_handler,
       NGX_HTTP_VAR_FUNC_MIN,
       2, 2 },
 
     { ngx_string("add"),
-      ngx_http_var_add_handler,
+      ngx_http_var_arith_handler,
       NGX_HTTP_VAR_FUNC_ADD,
       2, 2 },
 
     { ngx_string("sub"),
-      ngx_http_var_sub_handler,
+      ngx_http_var_arith_handler,
       NGX_HTTP_VAR_FUNC_SUB,
       2, 2 },
 
     { ngx_string("mul"),
-      ngx_http_var_mul_handler,
+      ngx_http_var_arith_handler,
       NGX_HTTP_VAR_FUNC_MUL,
       2, 2 },
 
     { ngx_string("div"),
-      ngx_http_var_div_handler,
+      ngx_http_var_arith_handler,
       NGX_HTTP_VAR_FUNC_DIV,
       2, 2 },
 
     { ngx_string("mod"),
-      ngx_http_var_mod_handler,
+      ngx_http_var_arith_handler,
       NGX_HTTP_VAR_FUNC_MOD,
       2, 2 },
 
     { ngx_string("bitwise_and"),
-      ngx_http_var_bitwise_and_handler,
+      ngx_http_var_bitwise_handler,
       NGX_HTTP_VAR_FUNC_BITWISE_AND,
       2, 2 },
 
@@ -503,27 +476,27 @@ static ngx_http_var_func_t  ngx_http_var_funcs[] = {
       1, 1 },
 
     { ngx_string("bitwise_or"),
-      ngx_http_var_bitwise_or_handler,
+      ngx_http_var_bitwise_handler,
       NGX_HTTP_VAR_FUNC_BITWISE_OR,
       2, 2 },
 
     { ngx_string("bitwise_xor"),
-      ngx_http_var_bitwise_xor_handler,
+      ngx_http_var_bitwise_handler,
       NGX_HTTP_VAR_FUNC_BITWISE_XOR,
       2, 2 },
 
     { ngx_string("lshift"),
-      ngx_http_var_lshift_handler,
+      ngx_http_var_shift_handler,
       NGX_HTTP_VAR_FUNC_LSHIFT,
       2, 2 },
 
     { ngx_string("rshift"),
-      ngx_http_var_rshift_handler,
+      ngx_http_var_shift_handler,
       NGX_HTTP_VAR_FUNC_RSHIFT,
       2, 2 },
 
     { ngx_string("urshift"),
-      ngx_http_var_urshift_handler,
+      ngx_http_var_shift_handler,
       NGX_HTTP_VAR_FUNC_URSHIFT,
       2, 2 },
 
@@ -532,18 +505,18 @@ static ngx_http_var_func_t  ngx_http_var_funcs[] = {
       NGX_HTTP_VAR_FUNC_ROUND,
       2, 2 },
 
-    { ngx_string("int"),
-      ngx_http_var_int_handler,
-      NGX_HTTP_VAR_FUNC_INT,
+    { ngx_string("trunc"),
+      ngx_http_var_round_handler,
+      NGX_HTTP_VAR_FUNC_TRUNC,
       1, 1 },
 
     { ngx_string("floor"),
-      ngx_http_var_floor_handler,
+      ngx_http_var_round_handler,
       NGX_HTTP_VAR_FUNC_FLOOR,
       1, 1 },
 
     { ngx_string("ceil"),
-      ngx_http_var_ceil_handler,
+      ngx_http_var_round_handler,
       NGX_HTTP_VAR_FUNC_CEIL,
       1, 1 },
 
@@ -1595,6 +1568,36 @@ ngx_http_var_helper_auto_atofp(ngx_str_t val1, ngx_str_t val2,
 }
 
 
+#if (nginx_version >= 1031003)
+
+static uint64_t
+ngx_http_var_helper_random64(void)
+{
+    static uint64_t  counter, key[2];
+
+    if (counter == 0) {
+#if (NGX_OPENSSL)
+        if (RAND_bytes((u_char *) key, 16) != 1)
+#endif
+        {
+            key[0] = ((uint64_t) ngx_random() << 32)
+                     | (uint32_t) ngx_random();
+            key[1] = ((uint64_t) ngx_random() << 32)
+                     | (uint32_t) ngx_random();
+            key[0] ^= (uint64_t) ngx_pid << 16;
+            key[1] ^= (uint64_t) ngx_time();
+        }
+    }
+
+    counter++;
+
+    return ngx_siphash(key[0], key[1], (u_char *) &counter,
+                       sizeof(counter));
+}
+
+#endif
+
+
 static ngx_int_t
 ngx_http_var_helper_escape_uri(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule,
@@ -2064,7 +2067,7 @@ ngx_http_var_len_handler(ngx_http_request_t *r,
 
 
 static ngx_int_t
-ngx_http_var_upper_handler(ngx_http_request_t *r,
+ngx_http_var_case_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
 {
     ngx_http_complex_value_t  *args;
@@ -2089,42 +2092,15 @@ ngx_http_var_upper_handler(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    for (i = 0; i < v->len; i++) {
-        v->data[i] = ngx_toupper(val.data[i]);
-    }
+    if (rule->func->type == NGX_HTTP_VAR_FUNC_UPPER) {
+        for (i = 0; i < v->len; i++) {
+            v->data[i] = ngx_toupper(val.data[i]);
+        }
 
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_lower_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val;
-    ngx_uint_t                 i;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    v->len = val.len;
-
-    if (v->len == 0) {
-        v->data = (u_char *) "";
-        return NGX_OK;
-    }
-
-    v->data = ngx_pnalloc(r->pool, v->len);
-    if (v->data == NULL) {
-        return NGX_ERROR;
-    }
-
-    for (i = 0; i < v->len; i++) {
-        v->data[i] = ngx_tolower(val.data[i]);
+    } else {
+        for (i = 0; i < v->len; i++) {
+            v->data[i] = ngx_tolower(val.data[i]);
+        }
     }
 
     return NGX_OK;
@@ -2191,6 +2167,28 @@ ngx_http_var_trim_handler(ngx_http_request_t *r,
     ngx_http_complex_value_t  *args;
     ngx_str_t                  val, s;
     u_char                    *start, *end;
+    ngx_uint_t                 trim_left, trim_right;
+
+    switch (rule->func->type) {
+
+    case NGX_HTTP_VAR_FUNC_TRIM:
+        trim_left = 1;
+        trim_right = 1;
+        break;
+
+    case NGX_HTTP_VAR_FUNC_LTRIM:
+        trim_left = 1;
+        trim_right = 0;
+        break;
+
+    case NGX_HTTP_VAR_FUNC_RTRIM:
+        trim_left = 0;
+        trim_right = 1;
+        break;
+
+    default:
+        return NGX_ERROR;
+    }
 
     args = rule->args->elts;
 
@@ -2219,128 +2217,30 @@ ngx_http_var_trim_handler(ngx_http_request_t *r,
             return NGX_ERROR;
         }
 
-        while (start <= end && *start == s.data[0]) {
-            start++;
+        if (trim_left) {
+            while (start <= end && *start == s.data[0]) {
+                start++;
+            }
         }
 
-        while (end >= start && *end == s.data[0]) {
-            end--;
-        }
-
-    } else {
-
-        while (start <= end && ngx_http_var_isspace(*start)) {
-            start++;
-        }
-
-        while (end >= start && ngx_http_var_isspace(*end)) {
-            end--;
-        }
-    }
-
-    v->data = start;
-    v->len = (end >= start) ? (size_t) (end - start + 1) : 0;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_ltrim_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val, s;
-    u_char                    *start, *end;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    if (val.len == 0) {
-        v->len = 0;
-        v->data = (u_char *) "";
-        return NGX_OK;
-    }
-
-    start = val.data;
-    end = val.data + val.len - 1;
-
-    if (rule->args->nelts == 2) {
-
-        if (ngx_http_complex_value(r, &args[1], &s) != NGX_OK) {
-            return NGX_ERROR;
-        }
-
-        if (s.len != 1) {
-            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                          "var: invalid trim char");
-            return NGX_ERROR;
-        }
-
-        while (start <= end && *start == s.data[0]) {
-            start++;
+        if (trim_right) {
+            while (end >= start && *end == s.data[0]) {
+                end--;
+            }
         }
 
     } else {
 
-        while (start <= end && ngx_http_var_isspace(*start)) {
-            start++;
-        }
-    }
-
-    v->data = start;
-    v->len = (end >= start) ? (size_t) (end - start + 1) : 0;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_rtrim_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val, s;
-    u_char                    *start, *end;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    if (val.len == 0) {
-        v->len = 0;
-        v->data = (u_char *) "";
-        return NGX_OK;
-    }
-
-    start = val.data;
-    end = val.data + val.len - 1;
-
-    if (rule->args->nelts == 2) {
-
-        if (ngx_http_complex_value(r, &args[1], &s) != NGX_OK) {
-            return NGX_ERROR;
+        if (trim_left) {
+            while (start <= end && ngx_http_var_isspace(*start)) {
+                start++;
+            }
         }
 
-        if (s.len != 1) {
-            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                          "var: invalid trim char");
-            return NGX_ERROR;
-        }
-
-        while (end >= start && *end == s.data[0]) {
-            end--;
-        }
-
-    } else {
-
-        while (end >= start && ngx_http_var_isspace(*end)) {
-            end--;
+        if (trim_right) {
+            while (end >= start && ngx_http_var_isspace(*end)) {
+                end--;
+            }
         }
     }
 
@@ -2425,7 +2325,7 @@ ngx_http_var_position_handler(ngx_http_request_t *r,
 
     } else {
         found = ngx_http_var_helper_strlstrn(val.data, val.data + val.len,
-                                            sub.data, sub.len - 1);
+                                             sub.data, sub.len - 1);
     }
 
     if (found != NULL) {
@@ -2799,18 +2699,11 @@ ngx_http_var_params_handler(ngx_http_request_t *r,
 {
     ngx_uint_t  keep;
 
-    switch (rule->func->type) {
-
-    case NGX_HTTP_VAR_FUNC_KEEP_PARAMS:
+    if (rule->func->type == NGX_HTTP_VAR_FUNC_KEEP_PARAMS) {
         keep = 1;
-        break;
 
-    case NGX_HTTP_VAR_FUNC_REMOVE_PARAMS:
+    } else {
         keep = 0;
-        break;
-
-    default:
-        return NGX_ERROR;
     }
 
     return ngx_http_var_helper_filter_params(r, v, rule, keep);
@@ -3141,11 +3034,11 @@ ngx_http_var_abs_handler(ngx_http_request_t *r,
 
 
 static ngx_int_t
-ngx_http_var_max_handler(ngx_http_request_t *r,
+ngx_http_var_minmax_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
 {
     ngx_http_complex_value_t  *args;
-    ngx_str_t                  val1, val2;
+    ngx_str_t                  val1, val2, *result;
     ngx_int_t                  fp_val1, fp_val2;
 
     args = rule->args->elts;
@@ -3160,64 +3053,27 @@ ngx_http_var_max_handler(ngx_http_request_t *r,
         != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: \"max\" failed to convert "
-                      "values to fixed point");
+                      "var: \"%V\" failed to convert values to fixed point",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
-    if (fp_val1 >= fp_val2) {
-        v->len = val1.len;
-        v->data = val1.data;
+    if (rule->func->type == NGX_HTTP_VAR_FUNC_MAX) {
+        result = (fp_val1 >= fp_val2) ? &val1 : &val2;
 
     } else {
-        v->len = val2.len;
-        v->data = val2.data;
+        result = (fp_val1 <= fp_val2) ? &val1 : &val2;
     }
+
+    v->len = result->len;
+    v->data = result->data;
 
     return NGX_OK;
 }
 
 
 static ngx_int_t
-ngx_http_var_min_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val1, val2;
-    ngx_int_t                  fp_val1, fp_val2;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val1) != NGX_OK
-        || ngx_http_complex_value(r, &args[1], &val2) != NGX_OK)
-    {
-        return NGX_ERROR;
-    }
-
-    if (ngx_http_var_helper_auto_atofp(val1, val2, &fp_val1, &fp_val2)
-        != NGX_OK)
-    {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: \"min\" failed to convert "
-                      "values to fixed point");
-        return NGX_ERROR;
-    }
-
-    if (fp_val1 <= fp_val2) {
-        v->len = val1.len;
-        v->data = val1.data;
-
-    } else {
-        v->len = val2.len;
-        v->data = val2.data;
-    }
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_add_handler(ngx_http_request_t *r,
+ngx_http_var_arith_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
 {
     ngx_http_complex_value_t  *args;
@@ -3237,143 +3093,123 @@ ngx_http_var_add_handler(ngx_http_request_t *r,
         || ngx_http_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
     {
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid integer value for \"add\" function");
+                      "var: invalid integer value for \"%V\" function",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
-    if (int_val2 > 0 && int_val1 > NGX_MAX_INT_T_VALUE - int_val2) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: integer overflow in \"add\" function");
-        return NGX_ERROR;
-    }
+    switch (rule->func->type) {
 
-    if (int_val2 < 0 && int_val1 < -NGX_MAX_INT_T_VALUE - int_val2) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: integer underflow in \"add\" function");
-        return NGX_ERROR;
-    }
-
-    result = int_val1 + int_val2;
-
-    p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
-    if (p == NULL) {
-        return NGX_ERROR;
-    }
-
-    v->len = ngx_sprintf(p, "%i", result) - p;
-    v->data = p;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_sub_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val1, val2;
-    ngx_int_t                  int_val1, int_val2, result;
-    u_char                    *p;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val1) != NGX_OK
-        || ngx_http_complex_value(r, &args[1], &val2) != NGX_OK)
-    {
-        return NGX_ERROR;
-    }
-
-    if (ngx_http_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_http_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
-    {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid integer value for \"sub\" function");
-        return NGX_ERROR;
-    }
-
-    if (int_val2 < 0 && int_val1 > NGX_MAX_INT_T_VALUE + int_val2) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: integer overflow in \"sub\" function");
-        return NGX_ERROR;
-    }
-
-    if (int_val2 > 0 && int_val1 < -NGX_MAX_INT_T_VALUE + int_val2) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: integer underflow in \"sub\" function");
-        return NGX_ERROR;
-    }
-
-    result = int_val1 - int_val2;
-
-    p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
-    if (p == NULL) {
-        return NGX_ERROR;
-    }
-
-    v->len = ngx_sprintf(p, "%i", result) - p;
-    v->data = p;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_mul_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val1, val2;
-    ngx_int_t                  int_val1, int_val2, result;
-    u_char                    *p;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val1) != NGX_OK
-        || ngx_http_complex_value(r, &args[1], &val2) != NGX_OK)
-    {
-        return NGX_ERROR;
-    }
-
-    if (ngx_http_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_http_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
-    {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid integer value for \"mul\" function");
-        return NGX_ERROR;
-    }
-
-    /* Check for multiplication overflow */
-    if (int_val1 > 0) {
-
-        if (int_val2 > 0 && int_val1 > NGX_MAX_INT_T_VALUE / int_val2) {
+    case NGX_HTTP_VAR_FUNC_ADD:
+        if (int_val2 > 0 && int_val1 > NGX_MAX_INT_T_VALUE - int_val2) {
             ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                          "var: integer overflow in \"mul\" function");
+                          "var: integer overflow in \"%V\" function",
+                          &rule->func->name);
             return NGX_ERROR;
         }
 
-        if (int_val2 < 0 && int_val2 < -NGX_MAX_INT_T_VALUE / int_val1) {
+        if (int_val2 < 0
+            && int_val1 < -NGX_MAX_INT_T_VALUE - int_val2)
+        {
             ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                          "var: integer underflow in \"mul\" function");
+                          "var: integer underflow in \"%V\" function",
+                          &rule->func->name);
             return NGX_ERROR;
         }
 
-    } else if (int_val1 < 0) {
+        result = int_val1 + int_val2;
+        break;
 
-        if (int_val2 > 0 && int_val1 < -NGX_MAX_INT_T_VALUE / int_val2) {
+    case NGX_HTTP_VAR_FUNC_SUB:
+        if (int_val2 < 0 && int_val1 > NGX_MAX_INT_T_VALUE + int_val2) {
             ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                          "var: integer underflow in \"mul\" function");
+                          "var: integer overflow in \"%V\" function",
+                          &rule->func->name);
             return NGX_ERROR;
         }
 
-        if (int_val2 < 0 && int_val1 < NGX_MAX_INT_T_VALUE / int_val2) {
+        if (int_val2 > 0
+            && int_val1 < -NGX_MAX_INT_T_VALUE + int_val2)
+        {
             ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                          "var: integer overflow in \"mul\" function");
+                          "var: integer underflow in \"%V\" function",
+                          &rule->func->name);
             return NGX_ERROR;
         }
+
+        result = int_val1 - int_val2;
+        break;
+
+    case NGX_HTTP_VAR_FUNC_MUL:
+        if (int_val1 > 0) {
+
+            if (int_val2 > 0
+                && int_val1 > NGX_MAX_INT_T_VALUE / int_val2)
+            {
+                ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                              "var: integer overflow in \"%V\" function",
+                              &rule->func->name);
+                return NGX_ERROR;
+            }
+
+            if (int_val2 < 0
+                && int_val2 < -NGX_MAX_INT_T_VALUE / int_val1)
+            {
+                ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                              "var: integer underflow in \"%V\" function",
+                              &rule->func->name);
+                return NGX_ERROR;
+            }
+
+        } else if (int_val1 < 0) {
+
+            if (int_val2 > 0
+                && int_val1 < -NGX_MAX_INT_T_VALUE / int_val2)
+            {
+                ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                              "var: integer underflow in \"%V\" function",
+                              &rule->func->name);
+                return NGX_ERROR;
+            }
+
+            if (int_val2 < 0
+                && int_val1 < NGX_MAX_INT_T_VALUE / int_val2)
+            {
+                ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                              "var: integer overflow in \"%V\" function",
+                              &rule->func->name);
+                return NGX_ERROR;
+            }
+        }
+
+        result = int_val1 * int_val2;
+        break;
+
+    case NGX_HTTP_VAR_FUNC_DIV:
+        if (int_val2 == 0) {
+            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                          "var: division by zero in \"%V\" function",
+                          &rule->func->name);
+            return NGX_ERROR;
+        }
+
+        result = int_val1 / int_val2;
+        break;
+
+    case NGX_HTTP_VAR_FUNC_MOD:
+        if (int_val2 == 0) {
+            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                          "var: modulo by zero in \"%V\" function",
+                          &rule->func->name);
+            return NGX_ERROR;
+        }
+
+        result = int_val1 % int_val2;
+        break;
+
+    default:
+        return NGX_ERROR;
     }
-
-    result = int_val1 * int_val2;
 
     p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
     if (p == NULL) {
@@ -3388,99 +3224,7 @@ ngx_http_var_mul_handler(ngx_http_request_t *r,
 
 
 static ngx_int_t
-ngx_http_var_div_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val1, val2;
-    ngx_int_t                  int_val1, int_val2, result;
-    u_char                    *p;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val1) != NGX_OK
-        || ngx_http_complex_value(r, &args[1], &val2) != NGX_OK)
-    {
-        return NGX_ERROR;
-    }
-
-    if (ngx_http_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_http_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
-    {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid integer value for \"div\" function");
-        return NGX_ERROR;
-    }
-
-    /* Check for division by zero */
-    if (int_val2 == 0) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: division by zero in \"div\" function");
-        return NGX_ERROR;
-    }
-
-    result = int_val1 / int_val2;
-
-    p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
-    if (p == NULL) {
-        return NGX_ERROR;
-    }
-
-    v->len = ngx_sprintf(p, "%i", result) - p;
-    v->data = p;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_mod_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val1, val2;
-    ngx_int_t                  int_val1, int_val2, result;
-    u_char                    *p;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val1) != NGX_OK
-        || ngx_http_complex_value(r, &args[1], &val2) != NGX_OK)
-    {
-        return NGX_ERROR;
-    }
-
-    if (ngx_http_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_http_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
-    {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid integer value for \"mod\" function");
-        return NGX_ERROR;
-    }
-
-    /* Check for modulo by zero */
-    if (int_val2 == 0) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: modulo by zero in \"mod\" function");
-        return NGX_ERROR;
-    }
-
-    result = int_val1 % int_val2;
-
-    p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
-    if (p == NULL) {
-        return NGX_ERROR;
-    }
-
-    v->len = ngx_sprintf(p, "%i", result) - p;
-    v->data = p;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_bitwise_and_handler(ngx_http_request_t *r,
+ngx_http_var_bitwise_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
 {
     ngx_http_complex_value_t  *args;
@@ -3504,7 +3248,23 @@ ngx_http_var_bitwise_and_handler(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    result = int_val1 & int_val2;
+    switch (rule->func->type) {
+
+    case NGX_HTTP_VAR_FUNC_BITWISE_AND:
+        result = int_val1 & int_val2;
+        break;
+
+    case NGX_HTTP_VAR_FUNC_BITWISE_OR:
+        result = int_val1 | int_val2;
+        break;
+
+    case NGX_HTTP_VAR_FUNC_BITWISE_XOR:
+        result = int_val1 ^ int_val2;
+        break;
+
+    default:
+        return NGX_ERROR;
+    }
 
     p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
     if (p == NULL) {
@@ -3554,191 +3314,12 @@ ngx_http_var_bitwise_not_handler(ngx_http_request_t *r,
 
 
 static ngx_int_t
-ngx_http_var_bitwise_or_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val1, val2;
-    ngx_int_t                  int_val1, int_val2, result;
-    u_char                    *p;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val1) != NGX_OK
-        || ngx_http_complex_value(r, &args[1], &val2) != NGX_OK)
-    {
-        return NGX_ERROR;
-    }
-
-    if (ngx_http_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_http_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
-    {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid integer value");
-        return NGX_ERROR;
-    }
-
-    result = int_val1 | int_val2;
-
-    p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
-    if (p == NULL) {
-        return NGX_ERROR;
-    }
-
-    v->len = ngx_sprintf(p, "%i", result) - p;
-    v->data = p;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_bitwise_xor_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val1, val2;
-    ngx_int_t                  int_val1, int_val2, result;
-    u_char                    *p;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val1) != NGX_OK
-        || ngx_http_complex_value(r, &args[1], &val2) != NGX_OK)
-    {
-        return NGX_ERROR;
-    }
-
-    if (ngx_http_var_helper_auto_atoi(val1, &int_val1) != NGX_OK
-        || ngx_http_var_helper_auto_atoi(val2, &int_val2) != NGX_OK)
-    {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid integer value");
-        return NGX_ERROR;
-    }
-
-    result = int_val1 ^ int_val2;
-
-    p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
-    if (p == NULL) {
-        return NGX_ERROR;
-    }
-
-    v->len = ngx_sprintf(p, "%i", result) - p;
-    v->data = p;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_lshift_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val1, val2;
-    ngx_int_t                  int_val, shift_bits, result;
-    u_char                    *p;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val1) != NGX_OK
-        || ngx_http_complex_value(r, &args[1], &val2) != NGX_OK)
-    {
-        return NGX_ERROR;
-    }
-
-    if (ngx_http_var_helper_auto_atoi(val1, &int_val) != NGX_OK) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid integer value");
-        return NGX_ERROR;
-    }
-
-    shift_bits = ngx_atoi(val2.data, val2.len);
-    if (shift_bits == NGX_ERROR) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid shift bits");
-        return NGX_ERROR;
-    }
-
-    if (shift_bits >= (ngx_int_t) (sizeof(ngx_int_t) * 8)) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: shift bits too large");
-        return NGX_ERROR;
-    }
-
-    result = int_val << shift_bits;
-
-    p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
-    if (p == NULL) {
-        return NGX_ERROR;
-    }
-
-    v->len = ngx_sprintf(p, "%i", result) - p;
-    v->data = p;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_rshift_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val1, val2;
-    ngx_int_t                  int_val, shift_bits, result;
-    u_char                    *p;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val1) != NGX_OK
-        || ngx_http_complex_value(r, &args[1], &val2) != NGX_OK)
-    {
-        return NGX_ERROR;
-    }
-
-    if (ngx_http_var_helper_auto_atoi(val1, &int_val) != NGX_OK) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid integer value");
-        return NGX_ERROR;
-    }
-
-    shift_bits = ngx_atoi(val2.data, val2.len);
-    if (shift_bits == NGX_ERROR) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid shift bits");
-        return NGX_ERROR;
-    }
-
-    if (shift_bits >= (ngx_int_t) (sizeof(ngx_int_t) * 8)) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: shift bits too large");
-        return NGX_ERROR;
-    }
-
-    result = int_val >> shift_bits;
-
-    p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
-    if (p == NULL) {
-        return NGX_ERROR;
-    }
-
-    v->len = ngx_sprintf(p, "%i", result) - p;
-    v->data = p;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_urshift_handler(ngx_http_request_t *r,
+ngx_http_var_shift_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
 {
     ngx_http_complex_value_t  *args;
     ngx_str_t                  val1, val2;
     ngx_int_t                  int_val, shift_bits;
-    ngx_uint_t                 unsigned_val, result;
     u_char                    *p;
 
     args = rule->args->elts;
@@ -3768,15 +3349,31 @@ ngx_http_var_urshift_handler(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    unsigned_val = (ngx_uint_t) int_val;
-    result = unsigned_val >> shift_bits;
-
     p = ngx_pnalloc(r->pool, NGX_INT_T_LEN);
     if (p == NULL) {
         return NGX_ERROR;
     }
 
-    v->len = ngx_sprintf(p, "%ui", result) - p;
+    switch (rule->func->type) {
+
+    case NGX_HTTP_VAR_FUNC_LSHIFT:
+        v->len = ngx_sprintf(p, "%i", int_val << shift_bits) - p;
+        break;
+
+    case NGX_HTTP_VAR_FUNC_RSHIFT:
+        v->len = ngx_sprintf(p, "%i", int_val >> shift_bits) - p;
+        break;
+
+    case NGX_HTTP_VAR_FUNC_URSHIFT:
+        v->len = ngx_sprintf(p, "%ui",
+                             (ngx_uint_t) int_val >> shift_bits)
+                 - p;
+        break;
+
+    default:
+        return NGX_ERROR;
+    }
+
     v->data = p;
 
     return NGX_OK;
@@ -3790,25 +3387,32 @@ ngx_http_var_round_handler(ngx_http_request_t *r,
     ngx_http_complex_value_t  *args;
     ngx_str_t                  val, val_precision;
     ngx_int_t                  precision, i, decimal_point;
+    ngx_uint_t                 is_negative, fraction_is_zero;
     u_char                    *num_data, *result, *p;
     size_t                     num_len, int_len, frac_len;
-    ngx_int_t                  is_negative;
     u_char                    *int_part, *frac_part;
 
     args = rule->args->elts;
 
-    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK
-        || ngx_http_complex_value(r, &args[1], &val_precision) != NGX_OK)
-    {
+    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    precision = ngx_atoi(val_precision.data, val_precision.len);
-    if (precision == NGX_ERROR || precision < 0) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid precision value for "
-                      "\"round\" function");
-        return NGX_ERROR;
+    precision = 0;
+
+    if (rule->func->type == NGX_HTTP_VAR_FUNC_ROUND) {
+
+        if (ngx_http_complex_value(r, &args[1], &val_precision) != NGX_OK) {
+            return NGX_ERROR;
+        }
+
+        precision = ngx_atoi(val_precision.data, val_precision.len);
+        if (precision == NGX_ERROR || precision < 0) {
+            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                          "var: invalid precision value for "
+                          "\"round\" function");
+            return NGX_ERROR;
+        }
     }
 
     num_data = val.data;
@@ -3816,12 +3420,13 @@ ngx_http_var_round_handler(ngx_http_request_t *r,
 
     if (num_len == 0) {
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: empty input for \"round\" function");
+                      "var: empty input for \"%V\" function",
+                      &rule->func->name);
         return NGX_ERROR;
     }
 
-    /* check for negative sign */
     is_negative = 0;
+
     if (num_data[0] == '-') {
         is_negative = 1;
         num_data++;
@@ -3834,7 +3439,6 @@ ngx_http_var_round_handler(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    /* find decimal point and validate */
     decimal_point = -1;
 
     for (i = 0; i < (ngx_int_t) num_len; i++) {
@@ -3864,7 +3468,9 @@ ngx_http_var_round_handler(ngx_http_request_t *r,
 
     } else {
 
-        if (decimal_point == (ngx_int_t) (num_len - 1)) {
+        if (decimal_point == (ngx_int_t) (num_len - 1)
+            && rule->func->type != NGX_HTTP_VAR_FUNC_TRUNC)
+        {
             ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
                           "var: decimal point at the end of number");
             return NGX_ERROR;
@@ -3876,73 +3482,158 @@ ngx_http_var_round_handler(ngx_http_request_t *r,
         frac_part = num_data + decimal_point + 1;
     }
 
-    if (frac_len == (size_t) precision) {
+    if (rule->func->type == NGX_HTTP_VAR_FUNC_TRUNC) {
+
+        if (decimal_point == -1) {
+            v->data = val.data;
+            v->len = val.len;
+
+        } else {
+            v->data = val.data;
+            v->len = (is_negative ? 1 : 0) + int_len;
+        }
+
+        return NGX_OK;
+    }
+
+    if (rule->func->type == NGX_HTTP_VAR_FUNC_ROUND) {
+
+        if (frac_len == (size_t) precision) {
+            v->data = val.data;
+            v->len = val.len;
+            return NGX_OK;
+        }
+
+        if (frac_len > (size_t) precision && frac_part[precision] < '5') {
+            v->data = val.data;
+            v->len = (is_negative ? 1 : 0) + int_len
+                     + (precision > 0 ? 1 + precision : 0);
+            return NGX_OK;
+        }
+
+        if (frac_len < (size_t) precision) {
+            i = (decimal_point == -1)
+                ? (1 + precision) : (precision - (ngx_int_t) frac_len);
+
+            result = ngx_palloc(r->pool, val.len + i + 1);
+            if (result == NULL) {
+                return NGX_ERROR;
+            }
+
+            p = ngx_cpymem(result, val.data, val.len);
+
+            if (decimal_point == -1) {
+                *p++ = '.';
+            }
+
+            ngx_memset(p, '0', precision - frac_len);
+
+            v->len = val.len + i;
+            v->data = result;
+            return NGX_OK;
+        }
+
+        result = ngx_palloc(r->pool, val.len + 2);
+        if (result == NULL) {
+            return NGX_ERROR;
+        }
+
+        p = result + 1;
+
+        if (is_negative) {
+            *p++ = '-';
+        }
+
+        p = ngx_cpymem(p, int_part, int_len);
+
+        if (precision > 0) {
+            *p++ = '.';
+            p = ngx_cpymem(p, frac_part, precision);
+        }
+
+        i = p - result;
+        p--;
+
+        while (p > result) {
+
+            if (*p == '.' || *p == '-') {
+                p--;
+                continue;
+            }
+
+            if (*p < '9') {
+                (*p)++;
+                v->data = result + 1;
+                v->len = i - 1;
+                return NGX_OK;
+            }
+
+            *p = '0';
+            p--;
+        }
+
+        if (is_negative) {
+            result[0] = result[1];
+            result[1] = '1';
+            v->data = result;
+            v->len = i;
+
+        } else {
+            result[0] = '1';
+            v->data = result;
+            v->len = i;
+        }
+
+        return NGX_OK;
+    }
+
+    if (rule->func->type != NGX_HTTP_VAR_FUNC_FLOOR
+        && rule->func->type != NGX_HTTP_VAR_FUNC_CEIL)
+    {
+        return NGX_ERROR;
+    }
+
+    if (frac_len == 0) {
         v->data = val.data;
         v->len = val.len;
         return NGX_OK;
     }
 
-    /* truncate without rounding */
-    if (frac_len > (size_t) precision && frac_part[precision] < '5') {
+    fraction_is_zero = 1;
+
+    for (i = 0; i < (ngx_int_t) frac_len; i++) {
+
+        if (frac_part[i] != '0') {
+            fraction_is_zero = 0;
+            break;
+        }
+    }
+
+    if (fraction_is_zero
+        || (rule->func->type == NGX_HTTP_VAR_FUNC_FLOOR && !is_negative)
+        || (rule->func->type == NGX_HTTP_VAR_FUNC_CEIL && is_negative))
+    {
         v->data = val.data;
-        v->len = (is_negative ? 1 : 0) + int_len
-                 + (precision > 0 ? 1 + precision : 0);
+        v->len = (is_negative ? 1 : 0) + int_len;
         return NGX_OK;
     }
 
-    /* pad with zeros */
-    if (frac_len < (size_t) precision) {
-        /* calculate how many characters to add */
-        i = (decimal_point == -1)
-            ? (1 + precision) : (precision - (ngx_int_t) frac_len);
-
-        result = ngx_palloc(r->pool, val.len + i + 1);
-        if (result == NULL) {
-            return NGX_ERROR;
-        }
-
-        p = ngx_cpymem(result, val.data, val.len);
-
-        if (decimal_point == -1) {
-            *p++ = '.';
-        }
-
-        ngx_memset(p, '0', precision - frac_len);
-
-        v->len = val.len + i;
-        v->data = result;
-        return NGX_OK;
-    }
-
-    /* need to round up */
     result = ngx_palloc(r->pool, val.len + 2);
     if (result == NULL) {
         return NGX_ERROR;
     }
 
-    /* reserve first byte for potential '1', build starting at result + 1 */
     p = result + 1;
+
     if (is_negative) {
         *p++ = '-';
     }
 
     p = ngx_cpymem(p, int_part, int_len);
-
-    if (precision > 0) {
-        *p++ = '.';
-        p = ngx_cpymem(p, frac_part, precision);
-    }
-
-    /* remember the end position */
     i = p - result;
-
-    /* apply carry from right to left */
     p--;
-    while (p > result) {
-        if (*p == '.' || *p == '-') {
-            p--;
-            continue;
-        }
+
+    while (p > result + (is_negative ? 1 : 0)) {
 
         if (*p < '9') {
             (*p)++;
@@ -3955,16 +3646,13 @@ ngx_http_var_round_handler(ngx_http_request_t *r,
         p--;
     }
 
-    /* overflow: prepend '1' */
     if (is_negative) {
-        /* for negative: copy '-' to reserved byte, insert '1' after */
-        result[0] = result[1];  /* copy '-' */
+        result[0] = result[1];
         result[1] = '1';
         v->data = result;
         v->len = i;
 
     } else {
-        /* for positive: use reserved byte */
         result[0] = '1';
         v->data = result;
         v->len = i;
@@ -3972,399 +3660,6 @@ ngx_http_var_round_handler(ngx_http_request_t *r,
 
     return NGX_OK;
 }
-
-
-static ngx_int_t
-ngx_http_var_int_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val;
-    ngx_int_t                  i, decimal_point;
-    u_char                    *num_data;
-    size_t                     num_len;
-    ngx_int_t                  is_negative;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    num_data = val.data;
-    num_len = val.len;
-
-    if (num_len == 0) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: empty input");
-        return NGX_ERROR;
-    }
-
-    /* check for negative sign */
-    is_negative = 0;
-    if (num_data[0] == '-') {
-        is_negative = 1;
-        num_data++;
-        num_len--;
-    }
-
-    if (num_len == 0 || num_data[0] == '.') {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid number format");
-        return NGX_ERROR;
-    }
-
-    /* find decimal point and validate */
-    decimal_point = -1;
-
-    for (i = 0; i < (ngx_int_t) num_len; i++) {
-
-        if (num_data[i] == '.') {
-
-            if (decimal_point != -1) {
-                ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                              "var: multiple decimal points found");
-                return NGX_ERROR;
-            }
-
-            decimal_point = i;
-
-        } else if (num_data[i] < '0' || num_data[i] > '9') {
-            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                          "var: invalid character in number");
-            return NGX_ERROR;
-        }
-    }
-
-    /* no decimal point, return as is */
-    if (decimal_point == -1) {
-        v->data = val.data;
-        v->len = val.len;
-        return NGX_OK;
-    }
-
-    /* truncate decimal part */
-    v->data = val.data;
-    v->len = (is_negative ? 1 : 0) + decimal_point;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_floor_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val;
-    ngx_int_t                  i, decimal_point;
-    u_char                    *num_data, *result, *p;
-    size_t                     num_len, int_len, frac_len;
-    ngx_int_t                  is_negative;
-    u_char                    *int_part, *frac_part;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    num_data = val.data;
-    num_len = val.len;
-
-    if (num_len == 0) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: empty input for \"floor\" function");
-        return NGX_ERROR;
-    }
-
-    /* check for negative sign */
-    is_negative = 0;
-    if (num_data[0] == '-') {
-        is_negative = 1;
-        num_data++;
-        num_len--;
-    }
-
-    if (num_len == 0 || num_data[0] == '.') {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid number format");
-        return NGX_ERROR;
-    }
-
-    /* find decimal point and validate */
-    decimal_point = -1;
-
-    for (i = 0; i < (ngx_int_t) num_len; i++) {
-
-        if (num_data[i] == '.') {
-
-            if (decimal_point != -1) {
-                ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                              "var: multiple decimal points found");
-                return NGX_ERROR;
-            }
-
-            decimal_point = i;
-
-        } else if (num_data[i] < '0' || num_data[i] > '9') {
-            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                          "var: invalid character in number");
-            return NGX_ERROR;
-        }
-    }
-
-    if (decimal_point == -1) {
-        v->data = val.data;
-        v->len = val.len;
-        return NGX_OK;
-    }
-
-    if (decimal_point == (ngx_int_t) (num_len - 1)) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: decimal point at the end of number");
-        return NGX_ERROR;
-    }
-
-    int_len = decimal_point;
-    int_part = num_data;
-    frac_len = num_len - decimal_point - 1;
-    frac_part = num_data + decimal_point + 1;
-
-    /* positive number: truncate decimal part */
-    if (!is_negative) {
-        v->data = val.data;
-        v->len = int_len;
-        return NGX_OK;
-    }
-
-    /* check if fractional part is all zeros */
-    for (i = 0; i < (ngx_int_t) frac_len; i++) {
-        if (frac_part[i] != '0') {
-            break;
-        }
-    }
-
-    /* negative with zero fraction: truncate decimal part */
-    if (i == (ngx_int_t) frac_len) {
-        v->data = val.data;
-        v->len = 1 + int_len;
-        return NGX_OK;
-    }
-
-    /* negative with non-zero fraction: subtract 1 from absolute value */
-    result = ngx_palloc(r->pool, val.len + 2);
-    if (result == NULL) {
-        return NGX_ERROR;
-    }
-
-    /* reserve first byte for potential '1', build starting at result + 1 */
-    p = result + 1;
-    *p++ = '-';
-    p = ngx_cpymem(p, int_part, int_len);
-
-    /* remember the end position */
-    i = p - result;
-
-    /* add 1 to absolute value (subtract 1 from negative number) */
-    p--;
-    while (p > result + 1) {
-        if (*p < '9') {
-            (*p)++;
-            v->data = result + 1;
-            v->len = i - 1;
-            return NGX_OK;
-        }
-
-        *p = '0';
-        p--;
-    }
-
-    /* overflow: prepend '1' after '-' */
-    result[0] = result[1];  /* copy '-' */
-    result[1] = '1';
-    v->data = result;
-    v->len = i;
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_var_ceil_handler(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
-{
-    ngx_http_complex_value_t  *args;
-    ngx_str_t                  val;
-    ngx_int_t                  i, decimal_point;
-    u_char                    *num_data, *result, *p;
-    size_t                     num_len, int_len, frac_len;
-    ngx_int_t                  is_negative;
-    u_char                    *int_part, *frac_part;
-
-    args = rule->args->elts;
-
-    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
-    num_data = val.data;
-    num_len = val.len;
-
-    if (num_len == 0) {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: empty input for \"ceil\" function");
-        return NGX_ERROR;
-    }
-
-    /* check for negative sign */
-    is_negative = 0;
-    if (num_data[0] == '-') {
-        is_negative = 1;
-        num_data++;
-        num_len--;
-    }
-
-    if (num_len == 0 || num_data[0] == '.') {
-        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "var: invalid number format");
-        return NGX_ERROR;
-    }
-
-    /* find decimal point and validate */
-    decimal_point = -1;
-
-    for (i = 0; i < (ngx_int_t) num_len; i++) {
-
-        if (num_data[i] == '.') {
-
-            if (decimal_point != -1) {
-                ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                              "var: multiple decimal points found");
-                return NGX_ERROR;
-            }
-
-            decimal_point = i;
-
-        } else if (num_data[i] < '0' || num_data[i] > '9') {
-            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                          "var: invalid character in number");
-            return NGX_ERROR;
-        }
-    }
-
-    if (decimal_point == -1) {
-        int_len = num_len;
-        int_part = num_data;
-        frac_len = 0;
-        frac_part = NULL;
-
-    } else {
-
-        if (decimal_point == (ngx_int_t) (num_len - 1)) {
-            ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                          "var: decimal point at the end of number");
-            return NGX_ERROR;
-        }
-
-        int_len = decimal_point;
-        int_part = num_data;
-        frac_len = num_len - decimal_point - 1;
-        frac_part = num_data + decimal_point + 1;
-    }
-
-    /* no fractional part: return as-is */
-    if (frac_len == 0) {
-        v->data = val.data;
-        v->len = val.len;
-        return NGX_OK;
-    }
-
-    /* negative number: truncate decimal part */
-    if (is_negative) {
-        v->data = val.data;
-        v->len = 1 + int_len;
-        return NGX_OK;
-    }
-
-    /* check if fractional part is all zeros */
-    for (i = 0; i < (ngx_int_t) frac_len; i++) {
-        if (frac_part[i] != '0') {
-            break;
-        }
-    }
-
-    /* positive with zero fraction: truncate decimal part */
-    if (i == (ngx_int_t) frac_len) {
-        v->data = val.data;
-        v->len = int_len;
-        return NGX_OK;
-    }
-
-    /* positive with non-zero fraction: add 1 to absolute value */
-    result = ngx_palloc(r->pool, val.len + 2);
-    if (result == NULL) {
-        return NGX_ERROR;
-    }
-
-    /* reserve first byte for potential '1', build starting at result + 1 */
-    p = result + 1;
-    p = ngx_cpymem(p, int_part, int_len);
-
-    /* remember the end position */
-    i = p - result;
-
-    /* add 1 */
-    p--;
-    while (p > result) {
-        if (*p < '9') {
-            (*p)++;
-            v->data = result + 1;
-            v->len = i - 1;
-            return NGX_OK;
-        }
-
-        *p = '0';
-        p--;
-    }
-
-    /* overflow: prepend '1' */
-    result[0] = '1';
-    v->data = result;
-    v->len = i;
-
-    return NGX_OK;
-}
-
-
-#if (nginx_version >= 1031003)
-
-static uint64_t
-ngx_http_var_random64(void)
-{
-    static uint64_t  counter, key[2];
-
-    if (counter == 0) {
-#if (NGX_OPENSSL)
-        if (RAND_bytes((u_char *) key, 16) != 1)
-#endif
-        {
-            key[0] = ((uint64_t) ngx_random() << 32)
-                     | (uint32_t) ngx_random();
-            key[1] = ((uint64_t) ngx_random() << 32)
-                     | (uint32_t) ngx_random();
-            key[0] ^= (uint64_t) ngx_pid << 16;
-            key[1] ^= (uint64_t) ngx_time();
-        }
-    }
-
-    counter++;
-
-    return ngx_siphash(key[0], key[1], (u_char *) &counter,
-                       sizeof(counter));
-}
-
-#endif
 
 
 static ngx_int_t
@@ -4390,7 +3685,7 @@ ngx_http_var_rand_handler(ngx_http_request_t *r,
         }
 
 #if (nginx_version >= 1031003)
-        random_value = ngx_http_var_random64()
+        random_value = ngx_http_var_helper_random64()
                        & (uint64_t) NGX_MAX_INT_T_VALUE;
         v->len = ngx_sprintf(p, "%ui", (ngx_uint_t) random_value) - p;
 #else
@@ -4461,7 +3756,7 @@ ngx_http_var_rand_handler(ngx_http_request_t *r,
 
     /* Generate a random number between start and end (inclusive) */
 #if (nginx_version >= 1031003)
-    random_value = ngx_http_var_random64();
+    random_value = ngx_http_var_helper_random64();
 #else
     random_value = ngx_random();
 #endif
@@ -4537,8 +3832,8 @@ ngx_http_var_hexrand_handler(ngx_http_request_t *r,
 
 #if (nginx_version >= 1031003)
 
-    random_bytes[0] = ngx_http_var_random64();
-    random_bytes[1] = ngx_http_var_random64();
+    random_bytes[0] = ngx_http_var_helper_random64();
+    random_bytes[1] = ngx_http_var_helper_random64();
 
     ngx_hex_dump(p, (u_char *) random_bytes, 16);
 
@@ -4845,18 +4140,11 @@ ngx_http_var_base64_encode_handler(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    switch (rule->func->type) {
-
-    case NGX_HTTP_VAR_FUNC_BASE64_ENCODE:
+    if (rule->func->type == NGX_HTTP_VAR_FUNC_BASE64_ENCODE) {
         ngx_encode_base64(&dst, &val);
-        break;
 
-    case NGX_HTTP_VAR_FUNC_BASE64URL_ENCODE:
+    } else {
         ngx_encode_base64url(&dst, &val);
-        break;
-
-    default:
-        return NGX_ERROR;
     }
 
     v->len = dst.len;
@@ -4892,18 +4180,11 @@ ngx_http_var_base64_decode_handler(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    switch (rule->func->type) {
-
-    case NGX_HTTP_VAR_FUNC_BASE64_DECODE:
+    if (rule->func->type == NGX_HTTP_VAR_FUNC_BASE64_DECODE) {
         rc = ngx_decode_base64(&dst, &val);
-        break;
 
-    case NGX_HTTP_VAR_FUNC_BASE64URL_DECODE:
+    } else {
         rc = ngx_decode_base64url(&dst, &val);
-        break;
-
-    default:
-        return NGX_ERROR;
     }
 
     if (rc != NGX_OK) {
