@@ -27,6 +27,7 @@
 #define NGX_HTTP_VAR_FILE_MAX  1024
 #define NGX_HTTP_VAR_NO_ARGS   0
 #define NGX_HTTP_VAR_MAX_ARGS  (ngx_uint_t) -1
+#define NGX_HTTP_VAR_NO_RULE   (ngx_uint_t) -1
 
 
 #define ngx_http_var_isspace(c)                                              \
@@ -126,6 +127,7 @@ typedef enum {
 
 typedef struct ngx_http_var_rule_s  ngx_http_var_rule_t;
 typedef struct ngx_http_var_func_s  ngx_http_var_func_t;
+typedef struct ngx_http_var_variable_s  ngx_http_var_variable_t;
 
 typedef ngx_int_t (*ngx_http_var_func_pt)(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
@@ -133,6 +135,8 @@ typedef ngx_int_t (*ngx_http_var_func_pt)(ngx_http_request_t *r,
 
 typedef struct {
     ngx_array_t                   *vars;
+    ngx_http_var_variable_t      **indexed_vars;
+    ngx_uint_t                     nindexed_vars;
 } ngx_http_var_conf_t;
 
 
@@ -153,11 +157,13 @@ struct ngx_http_var_rule_s {
 };
 
 
-typedef struct {
+struct ngx_http_var_variable_s {
     ngx_str_t                      name;        /* variable name */
     ngx_int_t                      index;       /* variable index */
     ngx_array_t                   *rules;       /* variable rules */
-} ngx_http_var_variable_t;
+    ngx_uint_t                     conditional_nrules;
+    ngx_uint_t                     default_rule;
+};
 
 
 typedef struct {
@@ -167,7 +173,8 @@ typedef struct {
 
 
 typedef struct {
-    ngx_uint_t                    *locked_vars;
+    u_char                        *locked_vars;
+    ngx_uint_t                     nlocked_vars;
     ngx_array_t                   *random_values;
 } ngx_http_var_ctx_t;
 
@@ -184,6 +191,9 @@ struct ngx_http_var_func_s {
 static void *ngx_http_var_create_conf(ngx_conf_t *cf);
 static char *ngx_http_var_merge_conf(ngx_conf_t *cf, void *parent,
     void *child);
+static void ngx_http_var_finalize_variable(ngx_http_var_variable_t *var);
+static ngx_int_t ngx_http_var_finalize_conf(ngx_conf_t *cf,
+    ngx_http_var_conf_t *conf);
 
 static char *ngx_http_var(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
@@ -202,9 +212,9 @@ static ngx_int_t ngx_http_var_compile_regex(ngx_conf_t *cf,
 
 static ngx_http_var_ctx_t *ngx_http_var_get_ctx(ngx_http_request_t *r);
 static ngx_int_t ngx_http_variable_acquire_lock(ngx_http_request_t *r,
-    ngx_int_t index);
+    ngx_http_var_variable_t *var);
 static void ngx_http_variable_release_lock(ngx_http_request_t *r,
-    ngx_int_t index);
+    ngx_uint_t index);
 static ngx_int_t ngx_http_var_get_cached_random(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_cache_random(ngx_http_request_t *r,
@@ -768,13 +778,20 @@ ngx_http_var_merge_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_var_rule_t      *rule;
     ngx_uint_t                i, j, found;
 
+    if (ngx_http_var_finalize_conf(cf, prev) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
     if (conf->vars == NULL) {
         conf->vars = prev->vars;
+        conf->indexed_vars = prev->indexed_vars;
+        conf->nindexed_vars = prev->nindexed_vars;
         return NGX_CONF_OK;
     }
 
     if (prev->vars == NULL) {
-        return NGX_CONF_OK;
+        return ngx_http_var_finalize_conf(cf, conf) == NGX_OK
+                   ? NGX_CONF_OK : NGX_CONF_ERROR;
     }
 
     prev_var = prev->vars->elts;
@@ -784,6 +801,13 @@ ngx_http_var_merge_conf(ngx_conf_t *cf, void *parent, void *child)
         conf_var = conf->vars->elts;
         for (j = 0; j < conf->vars->nelts; j++) {
             if (prev_var[i].index == conf_var[j].index) {
+                ngx_http_var_finalize_variable(&conf_var[j]);
+
+                if (conf_var[j].default_rule != NGX_HTTP_VAR_NO_RULE) {
+                    found = 1;
+                    break;
+                }
+
                 rule = ngx_array_push_n(conf_var[j].rules,
                                         prev_var[i].rules->nelts);
                 if (rule == NULL) {
@@ -809,7 +833,75 @@ ngx_http_var_merge_conf(ngx_conf_t *cf, void *parent, void *child)
         }
     }
 
-    return NGX_CONF_OK;
+    return ngx_http_var_finalize_conf(cf, conf) == NGX_OK
+               ? NGX_CONF_OK : NGX_CONF_ERROR;
+}
+
+
+static void
+ngx_http_var_finalize_variable(ngx_http_var_variable_t *var)
+{
+    ngx_http_var_rule_t  *rules;
+    ngx_uint_t            i;
+
+    var->conditional_nrules = var->rules->nelts;
+    var->default_rule = NGX_HTTP_VAR_NO_RULE;
+    rules = var->rules->elts;
+
+    for (i = 0; i < var->rules->nelts; i++) {
+
+#if (NGX_CONDITION)
+        if (rules[i].expr_id != NGX_CONDITION_NO_EXPR_ID) {
+            continue;
+        }
+#else
+        if (rules[i].filter != NULL) {
+            continue;
+        }
+#endif
+
+        var->conditional_nrules = i;
+        var->default_rule = i;
+        var->rules->nelts = i + 1;
+        break;
+    }
+}
+
+
+static ngx_int_t
+ngx_http_var_finalize_conf(ngx_conf_t *cf, ngx_http_var_conf_t *conf)
+{
+    ngx_http_core_main_conf_t  *cmcf;
+    ngx_http_var_variable_t    *vars;
+    ngx_uint_t                  i, n;
+
+    if (conf->vars == NULL || conf->indexed_vars != NULL) {
+        return NGX_OK;
+    }
+
+    cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
+    n = cmcf->variables.nelts;
+
+    conf->indexed_vars = ngx_pcalloc(cf->pool,
+                                     n * sizeof(ngx_http_var_variable_t *));
+    if (conf->indexed_vars == NULL) {
+        return NGX_ERROR;
+    }
+
+    conf->nindexed_vars = n;
+    vars = conf->vars->elts;
+
+    for (i = 0; i < conf->vars->nelts; i++) {
+        ngx_http_var_finalize_variable(&vars[i]);
+
+        if (vars[i].index < 0 || (ngx_uint_t) vars[i].index >= n) {
+            return NGX_ERROR;
+        }
+
+        conf->indexed_vars[vars[i].index] = &vars[i];
+    }
+
+    return NGX_OK;
 }
 
 
@@ -992,10 +1084,10 @@ static ngx_http_var_variable_t *
 ngx_http_var_add_variable(ngx_conf_t *cf, ngx_http_var_conf_t *vcf,
     ngx_str_t *name)
 {
-    ngx_http_variable_t      *v;
-    ngx_http_var_variable_t  *var;
-    ngx_int_t                 index;
-    ngx_uint_t                i;
+    ngx_http_variable_t       *v;
+    ngx_http_var_variable_t   *var;
+    ngx_int_t                  index;
+    ngx_uint_t                 i;
 
     v = ngx_http_add_variable(cf, name,
                               NGX_HTTP_VAR_CHANGEABLE
@@ -1040,6 +1132,8 @@ ngx_http_var_add_variable(ngx_conf_t *cf, ngx_http_var_conf_t *vcf,
 
     var->name = *name;
     var->index = index;
+    var->conditional_nrules = 0;
+    var->default_rule = NGX_HTTP_VAR_NO_RULE;
     var->rules = ngx_array_create(cf->pool, 4,
                                   sizeof(ngx_http_var_rule_t));
     if (var->rules == NULL) {
@@ -1048,7 +1142,7 @@ ngx_http_var_add_variable(ngx_conf_t *cf, ngx_http_var_conf_t *vcf,
 
 found:
 
-    v->data = (uintptr_t) &var->index;
+    v->data = (uintptr_t) index;
     v->get_handler = ngx_http_var_variable_handler;
 
     return var;
@@ -1175,8 +1269,7 @@ static ngx_http_var_ctx_t *
 ngx_http_var_get_ctx(ngx_http_request_t *r)
 {
     ngx_http_core_main_conf_t  *cmcf;
-
-    ngx_http_var_ctx_t  *ctx;
+    ngx_http_var_ctx_t         *ctx;
 
     /* attempt to get the current request context */
     ctx = ngx_http_get_module_ctx(r, ngx_http_var_module);
@@ -1190,11 +1283,10 @@ ngx_http_var_get_ctx(ngx_http_request_t *r)
         return NULL;
     }
 
-    /* initialize the variable lock array */
     cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
+    ctx->nlocked_vars = cmcf->variables.nelts;
 
-    ctx->locked_vars = ngx_pcalloc(r->pool,
-        cmcf->variables.nelts * sizeof(ngx_uint_t));
+    ctx->locked_vars = ngx_pcalloc(r->pool, ctx->nlocked_vars);
     if (ctx->locked_vars == NULL) {
         return NULL;
     }
@@ -1206,9 +1298,11 @@ ngx_http_var_get_ctx(ngx_http_request_t *r)
 
 
 static ngx_int_t
-ngx_http_variable_acquire_lock(ngx_http_request_t *r, ngx_int_t index)
+ngx_http_variable_acquire_lock(ngx_http_request_t *r,
+    ngx_http_var_variable_t *var)
 {
-    ngx_http_var_ctx_t       *ctx;
+    ngx_http_var_ctx_t  *ctx;
+    ngx_uint_t           index;
 
     /* get or create the context */
     ctx = ngx_http_var_get_ctx(r);
@@ -1216,15 +1310,21 @@ ngx_http_variable_acquire_lock(ngx_http_request_t *r, ngx_int_t index)
         return NGX_ERROR;
     }
 
-    /* check if it is already locked */
-    if (ctx->locked_vars[index] == 1) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "var: circular reference detected "
-                      "for variable index %ui", index);
+    index = (ngx_uint_t) var->index;
+
+    if (index >= ctx->nlocked_vars) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "var: invalid variable index %i", var->index);
         return NGX_ERROR;
     }
 
-    /* mark the variable as locked */
+    if (ctx->locked_vars[index]) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "var: circular reference detected "
+                      "for variable \"%V\"", &var->name);
+        return NGX_ERROR;
+    }
+
     ctx->locked_vars[index] = 1;
 
     return NGX_OK;
@@ -1232,17 +1332,16 @@ ngx_http_variable_acquire_lock(ngx_http_request_t *r, ngx_int_t index)
 
 
 static void
-ngx_http_variable_release_lock(ngx_http_request_t *r, ngx_int_t index)
+ngx_http_variable_release_lock(ngx_http_request_t *r, ngx_uint_t index)
 {
-    ngx_http_var_ctx_t       *ctx;
+    ngx_http_var_ctx_t  *ctx;
 
     /* get the current request context */
     ctx = ngx_http_get_module_ctx(r, ngx_http_var_module);
-    if (ctx == NULL) {
+    if (ctx == NULL || index >= ctx->nlocked_vars) {
         return;
     }
 
-    /* clear the lock mark */
     ctx->locked_vars[index] = 0;
 }
 
@@ -1324,7 +1423,7 @@ ngx_http_var_select_rule(ngx_http_request_t *r,
 
     rules = var->rules->elts;
 
-    for (i = 0; i < var->rules->nelts; i++) {
+    for (i = 0; i < var->conditional_nrules; i++) {
 
 #if (NGX_CONDITION)
         if (ngx_http_condition_get_expr_result(r, rules[i].expr_id)
@@ -1333,31 +1432,31 @@ ngx_http_var_select_rule(ngx_http_request_t *r,
             continue;
         }
 #else
-        if (rules[i].filter) {
+        if (ngx_http_complex_value(r, rules[i].filter, &val) != NGX_OK) {
+            return NGX_ERROR;
+        }
 
-            if (ngx_http_complex_value(r, rules[i].filter, &val)
-                != NGX_OK)
-            {
-                return NGX_ERROR;
+        if (val.len == 0 || (val.len == 1 && val.data[0] == '0')) {
+
+            if (!rules[i].negative) {
+                continue;
             }
 
-            if (val.len == 0 || (val.len == 1 && val.data[0] == '0')) {
+        } else {
 
-                if (!rules[i].negative) {
-                    continue;
-                }
-
-            } else {
-
-                if (rules[i].negative) {
-                    continue;
-                }
+            if (rules[i].negative) {
+                continue;
             }
         }
 #endif
 
         *rule = &rules[i];
 
+        return NGX_OK;
+    }
+
+    if (var->default_rule != NGX_HTTP_VAR_NO_RULE) {
+        *rule = &rules[var->default_rule];
         return NGX_OK;
     }
 
@@ -1370,53 +1469,47 @@ ngx_http_var_variable_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
 {
     ngx_http_var_conf_t          *vcf;
-    ngx_http_var_variable_t      *var, *vars;
+    ngx_http_var_variable_t      *var;
     ngx_http_var_rule_t          *rule;
-    ngx_int_t                     index;
     ngx_int_t                     rc;
-    ngx_uint_t                    i;
+    ngx_uint_t                    index;
 
     vcf = ngx_http_get_module_loc_conf(r, ngx_http_var_module);
+    index = (ngx_uint_t) data;
 
-    if (vcf == NULL || vcf->vars == NULL || vcf->vars->nelts == 0) {
+    if (vcf == NULL || vcf->indexed_vars == NULL
+        || index >= vcf->nindexed_vars)
+    {
         ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                        "var: not variable defined");
         v->not_found = 1;
         return NGX_OK;
     }
 
-    index = *(ngx_int_t *) data;
-
-    var = NULL;
-    vars = vcf->vars->elts;
-
-    for (i = 0; i < vcf->vars->nelts; i++) {
-
-        if (vars[i].index != index) {
-            continue;
-        }
-
-        /* found the variable */
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                       "var: variable \"%V\" definition found",
-                       &vars[i].name);
-
-        var = &vars[i];
-        break;
-    }
+    var = vcf->indexed_vars[index];
 
     if (var == NULL) {
         v->not_found = 1;
         return NGX_OK;
     }
 
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "var: variable \"%V\" definition found", &var->name);
+
+    if (ngx_http_variable_acquire_lock(r, var) != NGX_OK) {
+        v->not_found = 1;
+        return NGX_ERROR;
+    }
+
     rc = ngx_http_var_select_rule(r, var, &rule);
 
     if (rc == NGX_ERROR) {
+        ngx_http_variable_release_lock(r, index);
         return NGX_ERROR;
     }
 
     if (rc != NGX_OK) {
+        ngx_http_variable_release_lock(r, index);
         v->not_found = 1;
         return NGX_OK;
     }
@@ -1425,17 +1518,9 @@ ngx_http_var_variable_handler(ngx_http_request_t *r,
                    "var: evaluating the expression of variable \"%V\"",
                    &var->name);
 
-    /* acquire lock for variable to avoid loopback exception */
-    if (ngx_http_variable_acquire_lock(r, var->index) != NGX_OK) {
-        v->not_found = 1;
-        return NGX_ERROR;
-    }
-
-    /* evaluate the variable expression */
     rc = rule->func->handler(r, v, rule);
 
-    /* evaluation is complete, release the lock */
-    ngx_http_variable_release_lock(r, var->index);
+    ngx_http_variable_release_lock(r, index);
 
     if (rc != NGX_OK) {
         v->not_found = 1;
