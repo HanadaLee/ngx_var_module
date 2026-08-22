@@ -66,7 +66,27 @@ stream {
 
 ## Prerequisites
 
-To enable JSON extraction functionality (`extract_json` operation), you need to install the cJSON library first:
+The following optional build dependencies control whether their corresponding
+`var` functions are registered:
+
+| Dependency | Required by `var` functions |
+| --- | --- |
+| OpenSSL (`NGX_OPENSSL`) | `sha224`, `sha256`, `sha384`, `sha512`, `hmac_md5`, `hmac_sha1`, `hmac_sha224`, `hmac_sha256`, `hmac_sha384`, `hmac_sha512` |
+| PCRE/PCRE2 (`NGX_PCRE`) | `regex_capture`, `regex_sub` |
+| cJSON (`NGX_CJSON`) | `extract_json` |
+
+If a dependency is unavailable, its functions are not registered and
+nginx configuration validation fails when one of them is used. Enable OpenSSL
+support with an nginx SSL module such as `--with-http_ssl_module` or
+`--with-stream_ssl_module`. PCRE/PCRE2 is normally enabled by the default nginx
+build; do not configure nginx with `--without-pcre` when the regex functions
+are required.
+
+The `crc32`, `md5`, and `sha1` functions use nginx core implementations and do
+not require OpenSSL. The `rand` and `hexrand` functions also remain available
+without OpenSSL and use their fallback random generator when necessary.
+
+Install cJSON before configuring nginx when `extract_json` is required:
 
 **Debian/Ubuntu:**
 ```bash
@@ -93,7 +113,8 @@ make
 sudo make install
 ```
 
-If cJSON is not installed, the module will still compile successfully but the `extract_json` operation will not be available.
+After installing or upgrading cJSON, rerun the nginx `configure` script so the
+module can detect it.
 
 ## Build Module
 
@@ -207,8 +228,7 @@ var $new_var remove_params [-i] src_string separator delimiter <key1> <key2> ...
 # var $removed remove_params "foo=123&bar=456&baz=789" & = bar;
 
 #### JSON operation ####
-# Extract json value from a valid json string.
-# Requires cJSON library to be installed (see Installation section)
+# Extract json value from a valid json string (requires cJSON)
 var $new_var extract_json json subkey1 [subkey2] [subkey3] ...;
 
 # Supports nested object keys and array indices [n]
@@ -234,10 +254,10 @@ var $new_var extract_json json subkey1 [subkey2] [subkey3] ...;
 
 
 #### Regex Operations ####
-# Capture regex
+# Capture regex (requires PCRE/PCRE2)
 var $new_var regex_capture [-i] src_str regex assign_value;
 
-# Substitute regex
+# Substitute regex (requires PCRE/PCRE2)
 var $new_var regex_sub [-i] src_str regex replacement;
 
 
@@ -358,39 +378,39 @@ var $new_var base64url_decode src_str;
 var $new_var crc32 src_str;
 
 # MD5
-var $new_var md5sum src_str;
+var $new_var md5 src_str;
 
 # SHA1
-var $new_var sha1sum src_str;
+var $new_var sha1 src_str;
 
-# SHA224
-var $new_var sha224sum src_str;
+# SHA224 (requires OpenSSL)
+var $new_var sha224 src_str;
 
-# SHA256
-var $new_var sha256sum src_str;
+# SHA256 (requires OpenSSL)
+var $new_var sha256 src_str;
 
-# SHA384
-var $new_var sha384sum src_str;
+# SHA384 (requires OpenSSL)
+var $new_var sha384 src_str;
 
-# SHA512
-var $new_var sha512sum src_str;
+# SHA512 (requires OpenSSL)
+var $new_var sha512 src_str;
 
-# HMAC_MD5 encryption
+# HMAC_MD5 encryption (requires OpenSSL)
 var $new_var hmac_md5 src_str secret;
 
-# HMAC_SHA1 encryption
+# HMAC_SHA1 encryption (requires OpenSSL)
 var $new_var hmac_sha1 src_str secret;
 
-# HMAC_SHA224 encryption
+# HMAC_SHA224 encryption (requires OpenSSL)
 var $new_var hmac_sha224 src_str secret;
 
-# HMAC_SHA256 encryption
+# HMAC_SHA256 encryption (requires OpenSSL)
 var $new_var hmac_sha256 src_str secret;
 
-# HMAC_SHA384 encryption
+# HMAC_SHA384 encryption (requires OpenSSL)
 var $new_var hmac_sha384 src_str secret;
 
-# HMAC_SHA512 encryption
+# HMAC_SHA512 encryption (requires OpenSSL)
 var $new_var hmac_sha512 src_str secret;
 
 #### Time Format ####
