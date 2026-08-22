@@ -15,6 +15,7 @@ Both modules dynamically assign new variables through predefined functions.
 - [Conditional syntax](#conditional-syntax)
 - [Directives](#directives)
   - [var](#var)
+- [Testing](#testing)
 - [Author](#author)
 - [License](#license)
 
@@ -491,6 +492,24 @@ when !has_sni {
 }
 
 var $new_var set other-sni;
+```
+
+# Testing
+
+The test suite uses the nginx-tests framework. Run the legacy condition tests
+with an nginx binary built without `ngx_condition_module`:
+
+```bash
+TEST_NGINX_BINARY=/path/to/nginx \
+    prove -I /path/to/nginx-tests/lib t/var_legacy.t
+```
+
+Run the named condition tests with an nginx binary that includes both this
+module and `ngx_condition_module`:
+
+```bash
+TEST_NGINX_BINARY=/path/to/nginx-with-condition \
+    prove -I /path/to/nginx-tests/lib t/var_condition.t
 ```
 
 # Author
