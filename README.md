@@ -235,7 +235,8 @@ var $new_var remove_params [-i] src_string separator delimiter <key1> <key2> ...
 
 #### JSON operation ####
 # Extract json value from a valid json string (requires cJSON)
-var $new_var extract_json json path;
+# Object keys are case-sensitive by default; use -i to ignore case
+var $new_var extract_json [-i] json path;
 
 # The path syntax matches nginx json_set:
 # - write paths relative to the JSON root, without a leading $

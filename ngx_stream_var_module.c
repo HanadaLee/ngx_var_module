@@ -290,9 +290,10 @@ static ngx_int_t ngx_stream_var_params_handler(ngx_stream_session_t *s,
 static ngx_int_t ngx_stream_var_extract_json_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 static ngx_int_t ngx_stream_var_json_path(ngx_pool_t *pool, cJSON **current,
-    ngx_str_t *path);
+    ngx_str_t *path, ngx_uint_t ignore_case);
 static ngx_int_t ngx_stream_var_json_object_item(ngx_pool_t *pool,
-    cJSON **current, u_char *data, size_t len, ngx_uint_t quoted);
+    cJSON **current, u_char *data, size_t len, ngx_uint_t quoted,
+    ngx_uint_t ignore_case);
 #endif
 
 #if (NGX_PCRE)
@@ -2927,7 +2928,7 @@ return_original:
 
 static ngx_int_t
 ngx_stream_var_json_object_item(ngx_pool_t *pool, cJSON **current,
-    u_char *data, size_t len, ngx_uint_t quoted)
+    u_char *data, size_t len, ngx_uint_t quoted, ngx_uint_t ignore_case)
 {
     char    *name;
     u_char  *p;
@@ -2971,7 +2972,12 @@ ngx_stream_var_json_object_item(ngx_pool_t *pool, cJSON **current,
         return NGX_DECLINED;
     }
 
-    *current = cJSON_GetObjectItem(*current, name);
+    if (ignore_case) {
+        *current = cJSON_GetObjectItem(*current, name);
+
+    } else {
+        *current = cJSON_GetObjectItemCaseSensitive(*current, name);
+    }
 
     if (key != NULL) {
         cJSON_Delete(key);
@@ -2982,7 +2988,8 @@ ngx_stream_var_json_object_item(ngx_pool_t *pool, cJSON **current,
 
 
 static ngx_int_t
-ngx_stream_var_json_path(ngx_pool_t *pool, cJSON **current, ngx_str_t *path)
+ngx_stream_var_json_path(ngx_pool_t *pool, cJSON **current, ngx_str_t *path,
+    ngx_uint_t ignore_case)
 {
     u_char     *p, *last, *start;
     ngx_int_t   index, rc;
@@ -3032,7 +3039,8 @@ ngx_stream_var_json_path(ngx_pool_t *pool, cJSON **current, ngx_str_t *path)
                     }
 
                     rc = ngx_stream_var_json_object_item(pool, current, start,
-                                                         p - start, 1);
+                                                         p - start, 1,
+                                                         ignore_case);
                     p++;
                     break;
                 }
@@ -3080,7 +3088,7 @@ ngx_stream_var_json_path(ngx_pool_t *pool, cJSON **current, ngx_str_t *path)
             }
 
             rc = ngx_stream_var_json_object_item(pool, current, start,
-                                                 p - start, 0);
+                                                 p - start, 0, ignore_case);
         }
 
         if (rc != NGX_OK) {
@@ -3163,7 +3171,8 @@ ngx_stream_var_extract_json_handler(ngx_stream_session_t *s,
         goto failed;
     }
 
-    rc = ngx_stream_var_json_path(s->connection->pool, &current, &path);
+    rc = ngx_stream_var_json_path(s->connection->pool, &current, &path,
+                                  rule->ignore_case);
 
     if (rc == NGX_DECLINED) {
         goto not_found;

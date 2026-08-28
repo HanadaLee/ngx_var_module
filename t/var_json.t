@@ -24,6 +24,10 @@ my @cases = (
     [ 'extract_json supports quoted object keys', 'quoted' ],
     [ 'extract_json supports a root array', 'second' ],
     [ 'extract_json evaluates a dynamic path', 'Alice' ],
+    [ 'extract_json matches object keys case-sensitively by default', 'exact' ],
+    [ 'extract_json rejects a case mismatch by default', '' ],
+    [ 'extract_json -i ignores case for object keys', 'exact' ],
+    [ 'extract_json -i ignores case for quoted object keys', 'quoted' ],
     [ 'extract_json returns strings without quotes', 'hello' ],
     [ 'extract_json serializes arrays compactly', '[1,2,3]' ],
     [ 'extract_json serializes objects compactly', '{"name":"Bob","age":30}' ],
@@ -63,6 +67,10 @@ http {
         var $json_root_array extract_json '[{"name":"first"},{"name":"second"}]' [1].name;
         var $json_path set users[0].name;
         var $json_dynamic extract_json '{"users":[{"name":"Alice"}]}' $json_path;
+        var $json_case_exact extract_json '{"Name":{"Value":"exact"}}' Name.Value;
+        var $json_case_mismatch extract_json '{"Name":{"Value":"exact"}}' name.value;
+        var $json_case_insensitive extract_json -i '{"Name":{"Value":"exact"}}' name.value;
+        var $json_quoted_insensitive extract_json -i '{"A.B":{"Sp Ace":"quoted"}}' '["a.b"]["sp ace"]';
         var $json_string extract_json '{"value":"hello"}' value;
         var $json_array extract_json '{"data":[1,2,3]}' data;
         var $json_object extract_json '{"user":{"name":"Bob","age":30}}' user;
@@ -72,7 +80,7 @@ http {
         var $json_invalid extract_json '{invalid}' value;
 
         location / {
-            return 200 '$json_nested|$json_array_item|$json_quoted|$json_root_array|$json_dynamic|$json_string|$json_array|$json_object|$json_bool|$json_null|$json_missing|$json_invalid';
+            return 200 '$json_nested|$json_array_item|$json_quoted|$json_root_array|$json_dynamic|$json_case_exact|$json_case_mismatch|$json_case_insensitive|$json_quoted_insensitive|$json_string|$json_array|$json_object|$json_bool|$json_null|$json_missing|$json_invalid';
         }
     }
 }
@@ -89,6 +97,10 @@ stream {
         var $json_root_array extract_json '[{"name":"first"},{"name":"second"}]' [1].name;
         var $json_path set users[0].name;
         var $json_dynamic extract_json '{"users":[{"name":"Alice"}]}' $json_path;
+        var $json_case_exact extract_json '{"Name":{"Value":"exact"}}' Name.Value;
+        var $json_case_mismatch extract_json '{"Name":{"Value":"exact"}}' name.value;
+        var $json_case_insensitive extract_json -i '{"Name":{"Value":"exact"}}' name.value;
+        var $json_quoted_insensitive extract_json -i '{"A.B":{"Sp Ace":"quoted"}}' '["a.b"]["sp ace"]';
         var $json_string extract_json '{"value":"hello"}' value;
         var $json_array extract_json '{"data":[1,2,3]}' data;
         var $json_object extract_json '{"user":{"name":"Bob","age":30}}' user;
@@ -97,7 +109,7 @@ stream {
         var $json_missing extract_json '{"a":1}' missing;
         var $json_invalid extract_json '{invalid}' value;
 
-        return '$json_nested|$json_array_item|$json_quoted|$json_root_array|$json_dynamic|$json_string|$json_array|$json_object|$json_bool|$json_null|$json_missing|$json_invalid';
+        return '$json_nested|$json_array_item|$json_quoted|$json_root_array|$json_dynamic|$json_case_exact|$json_case_mismatch|$json_case_insensitive|$json_quoted_insensitive|$json_string|$json_array|$json_object|$json_bool|$json_null|$json_missing|$json_invalid';
     }
 }
 

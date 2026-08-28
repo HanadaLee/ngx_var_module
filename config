@@ -7,7 +7,11 @@ ngx_feature_run=no
 ngx_feature_incs="#include <cjson/cJSON.h>"
 ngx_feature_path=
 ngx_feature_libs="-lcjson"
-ngx_feature_test="cJSON *json = cJSON_Parse(\"{}\"); if (json) cJSON_Delete(json);"
+ngx_feature_test="cJSON *json = cJSON_Parse(\"{}\");
+                  if (json) {
+                      (void) cJSON_GetObjectItemCaseSensitive(json, \"key\");
+                      cJSON_Delete(json);
+                  }"
 . auto/feature
 
 if [ "$ngx_found" = yes ]; then
