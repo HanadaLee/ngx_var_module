@@ -21,6 +21,9 @@ select STDOUT; $| = 1;
 my @cases = (
     [ 'extract_json traverses nested objects', '3' ],
     [ 'extract_json traverses array indices', 'Bob' ],
+    [ 'extract_json supports quoted object keys', 'quoted' ],
+    [ 'extract_json supports a root array', 'second' ],
+    [ 'extract_json evaluates a dynamic path', 'Alice' ],
     [ 'extract_json returns strings without quotes', 'hello' ],
     [ 'extract_json serializes arrays compactly', '[1,2,3]' ],
     [ 'extract_json serializes objects compactly', '{"name":"Bob","age":30}' ],
@@ -54,8 +57,12 @@ http {
         listen       127.0.0.1:8080;
         server_name  localhost;
 
-        var $json_nested extract_json '{"a":{"b":{"c":3}}}' a b c;
-        var $json_array_item extract_json '{"users":[{"name":"Alice"},{"name":"Bob"}]}' users [1] name;
+        var $json_nested extract_json '{"a":{"b":{"c":3}}}' a.b.c;
+        var $json_array_item extract_json '{"users":[{"name":"Alice"},{"name":"Bob"}]}' users[1].name;
+        var $json_quoted extract_json '{"a.b":{"sp ace":"quoted"}}' '["a.b"]["sp ace"]';
+        var $json_root_array extract_json '[{"name":"first"},{"name":"second"}]' [1].name;
+        var $json_path set users[0].name;
+        var $json_dynamic extract_json '{"users":[{"name":"Alice"}]}' $json_path;
         var $json_string extract_json '{"value":"hello"}' value;
         var $json_array extract_json '{"data":[1,2,3]}' data;
         var $json_object extract_json '{"user":{"name":"Bob","age":30}}' user;
@@ -65,7 +72,7 @@ http {
         var $json_invalid extract_json '{invalid}' value;
 
         location / {
-            return 200 '$json_nested|$json_array_item|$json_string|$json_array|$json_object|$json_bool|$json_null|$json_missing|$json_invalid';
+            return 200 '$json_nested|$json_array_item|$json_quoted|$json_root_array|$json_dynamic|$json_string|$json_array|$json_object|$json_bool|$json_null|$json_missing|$json_invalid';
         }
     }
 }
@@ -76,8 +83,12 @@ stream {
     server {
         listen 127.0.0.1:8081;
 
-        var $json_nested extract_json '{"a":{"b":{"c":3}}}' a b c;
-        var $json_array_item extract_json '{"users":[{"name":"Alice"},{"name":"Bob"}]}' users [1] name;
+        var $json_nested extract_json '{"a":{"b":{"c":3}}}' a.b.c;
+        var $json_array_item extract_json '{"users":[{"name":"Alice"},{"name":"Bob"}]}' users[1].name;
+        var $json_quoted extract_json '{"a.b":{"sp ace":"quoted"}}' '["a.b"]["sp ace"]';
+        var $json_root_array extract_json '[{"name":"first"},{"name":"second"}]' [1].name;
+        var $json_path set users[0].name;
+        var $json_dynamic extract_json '{"users":[{"name":"Alice"}]}' $json_path;
         var $json_string extract_json '{"value":"hello"}' value;
         var $json_array extract_json '{"data":[1,2,3]}' data;
         var $json_object extract_json '{"user":{"name":"Bob","age":30}}' user;
@@ -86,7 +97,7 @@ stream {
         var $json_missing extract_json '{"a":1}' missing;
         var $json_invalid extract_json '{invalid}' value;
 
-        return '$json_nested|$json_array_item|$json_string|$json_array|$json_object|$json_bool|$json_null|$json_missing|$json_invalid';
+        return '$json_nested|$json_array_item|$json_quoted|$json_root_array|$json_dynamic|$json_string|$json_array|$json_object|$json_bool|$json_null|$json_missing|$json_invalid';
     }
 }
 

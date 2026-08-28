@@ -235,19 +235,27 @@ var $new_var remove_params [-i] src_string separator delimiter <key1> <key2> ...
 
 #### JSON operation ####
 # Extract json value from a valid json string (requires cJSON)
-var $new_var extract_json json subkey1 [subkey2] [subkey3] ...;
+var $new_var extract_json json path;
 
-# Supports nested object keys and array indices [n]
+# The path syntax matches nginx json_set:
+# - write paths relative to the JSON root, without a leading $
+# - separate object keys with a dot
+# - use [n] for an array index
+# - use ["key"] for an object key that requires quoting
 # Returns string values without quotes, other types as JSON strings
 # Arrays and objects are returned as compact JSON strings
 
 # Examples:
 # Extract from nested object
-# var $new_var extract_json '{"a":{"b":{"c":3}}}' a b c;
+# var $new_var extract_json '{"a":{"b":{"c":3}}}' a.b.c;
 # Result: 3
 
 # Extract from array using [index]
-# var $new_var extract_json '{"users":[{"name":"Alice"},{"name":"Bob"}]}' users [0] name;
+# var $new_var extract_json '{"users":[{"name":"Alice"},{"name":"Bob"}]}' users[0].name;
+# Result: Alice
+
+# Extract a key containing path syntax characters
+# var $new_var extract_json '{"a.b":{"name":"Alice"}}' '["a.b"].name';
 # Result: Alice
 
 # Extract array as JSON string

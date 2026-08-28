@@ -289,6 +289,10 @@ static ngx_int_t ngx_http_var_params_handler(ngx_http_request_t *r,
 #if (NGX_CJSON)
 static ngx_int_t ngx_http_var_extract_json_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
+static ngx_int_t ngx_http_var_json_path(ngx_pool_t *pool, cJSON **current,
+    ngx_str_t *path);
+static ngx_int_t ngx_http_var_json_object_item(ngx_pool_t *pool,
+    cJSON **current, u_char *data, size_t len, ngx_uint_t quoted);
 #endif
 
 #if (NGX_PCRE)
@@ -451,7 +455,7 @@ static ngx_http_var_func_t  ngx_http_var_funcs[] = {
     { ngx_string("extract_json"),
       ngx_http_var_extract_json_handler,
       NGX_HTTP_VAR_FUNC_EXTRACT_JSON,
-      2, NGX_HTTP_VAR_MAX_ARGS },
+      2, 2 },
 #endif
 
 #if (NGX_PCRE)
@@ -2938,15 +2942,199 @@ return_original:
 #if (NGX_CJSON)
 
 static ngx_int_t
+ngx_http_var_json_object_item(ngx_pool_t *pool, cJSON **current,
+    u_char *data, size_t len, ngx_uint_t quoted)
+{
+    char    *name;
+    u_char  *p;
+    cJSON   *key;
+
+    key = NULL;
+
+    p = ngx_pnalloc(pool, len + 1);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(p, data, len);
+    p[len] = '\0';
+
+    if (quoted) {
+        key = cJSON_Parse((char *) p);
+        if (key == NULL || !cJSON_IsString(key)) {
+            if (key != NULL) {
+                cJSON_Delete(key);
+            }
+
+            return NGX_ABORT;
+        }
+
+        name = cJSON_GetStringValue(key);
+        if (name == NULL) {
+            cJSON_Delete(key);
+            return NGX_ABORT;
+        }
+
+    } else {
+        name = (char *) p;
+    }
+
+    if (!cJSON_IsObject(*current)) {
+        if (key != NULL) {
+            cJSON_Delete(key);
+        }
+
+        return NGX_DECLINED;
+    }
+
+    *current = cJSON_GetObjectItem(*current, name);
+
+    if (key != NULL) {
+        cJSON_Delete(key);
+    }
+
+    return *current != NULL ? NGX_OK : NGX_DECLINED;
+}
+
+
+static ngx_int_t
+ngx_http_var_json_path(ngx_pool_t *pool, cJSON **current, ngx_str_t *path)
+{
+    u_char     *p, *last, *start;
+    ngx_int_t   index, rc;
+
+    if (path->len == 0) {
+        return NGX_ABORT;
+    }
+
+    p = path->data;
+    last = p + path->len;
+
+    while (p < last) {
+
+        if (*p == '[') {
+            p++;
+
+            if (p == last) {
+                return NGX_ABORT;
+            }
+
+            if (*p == '"') {
+                start = p++;
+
+                for ( ;; ) {
+                    if (p == last) {
+                        return NGX_ABORT;
+                    }
+
+                    if (*p == '\\') {
+                        if (++p == last) {
+                            return NGX_ABORT;
+                        }
+
+                        p++;
+                        continue;
+                    }
+
+                    if (*p != '"') {
+                        p++;
+                        continue;
+                    }
+
+                    p++;
+
+                    if (p == last || *p != ']') {
+                        return NGX_ABORT;
+                    }
+
+                    rc = ngx_http_var_json_object_item(pool, current, start,
+                                                       p - start, 1);
+                    p++;
+                    break;
+                }
+
+            } else {
+                start = p;
+
+                while (p < last && *p >= '0' && *p <= '9') {
+                    p++;
+                }
+
+                if (p == start || p == last || *p != ']') {
+                    return NGX_ABORT;
+                }
+
+                index = ngx_atoi(start, p - start);
+                if (index == NGX_ERROR
+                    || (ngx_uint_t) index > NGX_MAX_INT32_VALUE)
+                {
+                    return NGX_ABORT;
+                }
+
+                if (!cJSON_IsArray(*current)) {
+                    return NGX_DECLINED;
+                }
+
+                *current = cJSON_GetArrayItem(*current, (int) index);
+                if (*current == NULL) {
+                    return NGX_DECLINED;
+                }
+
+                p++;
+                rc = NGX_OK;
+            }
+
+        } else {
+            if (*p == '.' || *p == '$') {
+                return NGX_ABORT;
+            }
+
+            start = p;
+
+            while (p < last && *p != '.' && *p != '[') {
+                p++;
+            }
+
+            rc = ngx_http_var_json_object_item(pool, current, start,
+                                               p - start, 0);
+        }
+
+        if (rc != NGX_OK) {
+            return rc;
+        }
+
+        if (p == last) {
+            return NGX_OK;
+        }
+
+        if (*p == '.') {
+            p++;
+
+            if (p == last || *p == '.' || *p == '[' || *p == '$') {
+                return NGX_ABORT;
+            }
+
+            continue;
+        }
+
+        if (*p != '[') {
+            return NGX_ABORT;
+        }
+    }
+
+    return NGX_ABORT;
+}
+
+
+static ngx_int_t
 ngx_http_var_extract_json_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
 {
+    ngx_int_t                  rc;
     ngx_http_complex_value_t  *args;
     ngx_str_t                  val, path;
     cJSON                     *json, *current;
-    u_char                    *json_data, *key, *result;
-    ngx_uint_t                 i;
-    ngx_int_t                  index;
+    u_char                    *json_data, *result;
     char                      *text;
 
     args = rule->args->elts;
@@ -2987,62 +3175,28 @@ ngx_http_var_extract_json_handler(ngx_http_request_t *r,
 
     current = json;
 
-    for (i = 1; i < rule->args->nelts; i++) {
+    if (ngx_http_complex_value(r, &args[1], &path) != NGX_OK) {
+        goto failed;
+    }
 
-        if (ngx_http_complex_value(r, &args[i], &path) != NGX_OK) {
-            goto failed;
-        }
+    rc = ngx_http_var_json_path(r->pool, &current, &path);
 
-        while (path.len && ngx_http_var_isspace(path.data[0])) {
-            path.data++;
-            path.len--;
-        }
+    if (rc == NGX_DECLINED) {
+        goto not_found;
+    }
 
-        while (path.len && ngx_http_var_isspace(path.data[path.len - 1])) {
-            path.len--;
-        }
+    if (rc == NGX_ABORT) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "var %V: invalid JSON path \"%V\"",
+                      &rule->func->name, &path);
 
-        /* check if it's an array index like [0] or [1] */
-        if (path.len >= 3 && path.data[0] == '['
-            && path.data[path.len - 1] == ']')
-        {
+        cJSON_Delete(json);
 
-            index = ngx_atoi(path.data + 1, path.len - 2);
+        return NGX_ERROR;
+    }
 
-            if (index == NGX_ERROR) {
-                goto failed;
-            }
-
-            /* check if current node is an array */
-            if (!cJSON_IsArray(current)) {
-                goto not_found;
-            }
-
-            /* get array item by index */
-            current = cJSON_GetArrayItem(current, (int) index);
-            if (current == NULL) {
-                goto not_found;
-            }
-
-        } else {
-
-            if (!cJSON_IsObject(current)) {
-                goto not_found;
-            }
-
-            key = ngx_pnalloc(r->pool, path.len + 1);
-            if (key == NULL) {
-                goto failed;
-            }
-
-            ngx_memcpy(key, path.data, path.len);
-            key[path.len] = '\0';
-
-            current = cJSON_GetObjectItem(current, (char *) key);
-            if (current == NULL) {
-                goto not_found;
-            }
-        }
+    if (rc != NGX_OK) {
+        goto failed;
     }
 
     /* extract the value based on type */
