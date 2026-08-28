@@ -5,7 +5,7 @@ ngx_var_nginx_version=`awk '$1 == "#define" && $2 == "nginx_version" {
                             }' src/core/nginx.h`
 
 if [ -n "$ngx_var_nginx_version" \
-     -a "$ngx_var_nginx_version" -gt 1031005 ]; then
+     -a "$ngx_var_nginx_version" -ge 1031005 ]; then
     ngx_var_cjson_libs=
 
 else

@@ -19,7 +19,7 @@
 #include <openssl/hmac.h>
 #endif
 
-#if (nginx_version > 1031005)
+#if (nginx_version >= 1031005)
 #include <ngx_json_parse.h>
 #elif (NGX_CJSON)
 #include <cjson/cJSON.h>
@@ -55,7 +55,7 @@ typedef enum {
     NGX_STREAM_VAR_FUNC_KEEP_PARAMS,
     NGX_STREAM_VAR_FUNC_REMOVE_PARAMS,
 
-#if (nginx_version > 1031005 || NGX_CJSON)
+#if (nginx_version >= 1031005 || NGX_CJSON)
     NGX_STREAM_VAR_FUNC_EXTRACT_JSON,
 #endif
 
@@ -182,7 +182,7 @@ typedef struct {
 } ngx_stream_var_ctx_t;
 
 
-#if (nginx_version > 1031005)
+#if (nginx_version >= 1031005)
 
 typedef struct {
     ngx_uint_t                     is_index;
@@ -330,11 +330,11 @@ static ngx_int_t ngx_stream_var_extract_param_handler(ngx_stream_session_t *s,
 static ngx_int_t ngx_stream_var_params_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 
-#if (nginx_version > 1031005 || NGX_CJSON)
+#if (nginx_version >= 1031005 || NGX_CJSON)
 static ngx_int_t ngx_stream_var_extract_json_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 #endif
-#if (nginx_version > 1031005)
+#if (nginx_version >= 1031005)
 static ngx_int_t ngx_stream_var_json_parse_path(ngx_pool_t *pool,
     ngx_stream_var_json_node_t *root, ngx_str_t *path);
 static ngx_stream_var_json_node_t *ngx_stream_var_json_child(ngx_pool_t *pool,
@@ -516,7 +516,7 @@ static ngx_stream_var_func_t  ngx_stream_var_funcs[] = {
       NGX_STREAM_VAR_FUNC_REMOVE_PARAMS,
       4, NGX_STREAM_VAR_MAX_ARGS },
 
-#if (nginx_version > 1031005 || NGX_CJSON)
+#if (nginx_version >= 1031005 || NGX_CJSON)
     { ngx_string("extract_json"),
       ngx_stream_var_extract_json_handler,
       NGX_STREAM_VAR_FUNC_EXTRACT_JSON,
@@ -2988,7 +2988,7 @@ return_original:
 }
 
 
-#if (nginx_version > 1031005)
+#if (nginx_version >= 1031005)
 
 static ngx_int_t
 ngx_stream_var_json_parse_path(ngx_pool_t *pool,

@@ -74,7 +74,7 @@ The following optional build dependencies control whether their corresponding
 | --- | --- |
 | OpenSSL (`NGX_OPENSSL`) | `sha224`, `sha256`, `sha384`, `sha512`, `hmac_md5`, `hmac_sha1`, `hmac_sha224`, `hmac_sha256`, `hmac_sha384`, `hmac_sha512` |
 | PCRE/PCRE2 (`NGX_PCRE`) | `regex_capture`, `regex_sub`, `regex_gsub` |
-| cJSON (`NGX_CJSON`) | `extract_json` with nginx 1.31.5 and earlier |
+| cJSON (`NGX_CJSON`) | `extract_json` with nginx versions earlier than 1.31.5 |
 
 If a dependency is unavailable, its functions are not registered and
 nginx configuration validation fails when one of them is used. Enable OpenSSL
@@ -87,9 +87,9 @@ The `crc32`, `md5`, and `sha1` functions use nginx core implementations and do
 not require OpenSSL. The `rand` and `hexrand` functions also remain available
 without OpenSSL and use their fallback random generator when necessary.
 
-With nginx versions later than 1.31.5, `extract_json` uses the nginx core JSON
-parser and does not require cJSON. With nginx 1.31.5 and earlier, install cJSON
-before configuring nginx when `extract_json` is required:
+With nginx 1.31.5 and later, `extract_json` uses the nginx core JSON parser and
+does not require cJSON. With earlier nginx versions, install cJSON before
+configuring nginx when `extract_json` is required:
 
 **Debian/Ubuntu:**
 ```bash
