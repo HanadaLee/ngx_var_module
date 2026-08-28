@@ -19,7 +19,7 @@ select STDOUT; $| = 1;
 
 my $t = Test::Nginx->new()->has(qw/http ngx_var_module/);
 
-plan(skip_all => 'no cJSON support in ngx_var_module')
+plan(skip_all => 'no extract_json support in ngx_var_module')
     unless binary_contains($Test::Nginx::NGINX, "extract_json\0");
 
 $t->plan(2);

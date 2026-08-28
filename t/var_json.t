@@ -31,6 +31,7 @@ my @cases = (
     [ 'extract_json returns strings without quotes', 'hello' ],
     [ 'extract_json serializes arrays compactly', '[1,2,3]' ],
     [ 'extract_json serializes objects compactly', '{"name":"Bob","age":30}' ],
+    [ 'extract_json removes insignificant JSON whitespace', '[1,{"name":"Bob"}]' ],
     [ 'extract_json serializes booleans', 'true' ],
     [ 'extract_json serializes null', 'null' ],
     [ 'extract_json returns empty for a missing path', '' ],
@@ -40,7 +41,7 @@ my @cases = (
 my $t = Test::Nginx->new()
     ->has(qw/http stream stream_return ngx_var_module/);
 
-plan(skip_all => 'no cJSON support in ngx_var_module')
+plan(skip_all => 'no extract_json support in ngx_var_module')
     unless binary_contains($Test::Nginx::NGINX, "extract_json\0");
 
 $t->plan(2 * (@cases + 1));
@@ -74,13 +75,14 @@ http {
         var $json_string extract_json '{"value":"hello"}' value;
         var $json_array extract_json '{"data":[1,2,3]}' data;
         var $json_object extract_json '{"user":{"name":"Bob","age":30}}' user;
+        var $json_spaced extract_json '{"data": [1, {"name": "Bob"}]}' data;
         var $json_bool extract_json '{"value":true}' value;
         var $json_null extract_json '{"value":null}' value;
         var $json_missing extract_json '{"a":1}' missing;
         var $json_invalid extract_json '{invalid}' value;
 
         location / {
-            return 200 '$json_nested|$json_array_item|$json_quoted|$json_root_array|$json_dynamic|$json_case_exact|$json_case_mismatch|$json_case_insensitive|$json_quoted_insensitive|$json_string|$json_array|$json_object|$json_bool|$json_null|$json_missing|$json_invalid';
+            return 200 '$json_nested|$json_array_item|$json_quoted|$json_root_array|$json_dynamic|$json_case_exact|$json_case_mismatch|$json_case_insensitive|$json_quoted_insensitive|$json_string|$json_array|$json_object|$json_spaced|$json_bool|$json_null|$json_missing|$json_invalid';
         }
     }
 }
@@ -104,12 +106,13 @@ stream {
         var $json_string extract_json '{"value":"hello"}' value;
         var $json_array extract_json '{"data":[1,2,3]}' data;
         var $json_object extract_json '{"user":{"name":"Bob","age":30}}' user;
+        var $json_spaced extract_json '{"data": [1, {"name": "Bob"}]}' data;
         var $json_bool extract_json '{"value":true}' value;
         var $json_null extract_json '{"value":null}' value;
         var $json_missing extract_json '{"a":1}' missing;
         var $json_invalid extract_json '{invalid}' value;
 
-        return '$json_nested|$json_array_item|$json_quoted|$json_root_array|$json_dynamic|$json_case_exact|$json_case_mismatch|$json_case_insensitive|$json_quoted_insensitive|$json_string|$json_array|$json_object|$json_bool|$json_null|$json_missing|$json_invalid';
+        return '$json_nested|$json_array_item|$json_quoted|$json_root_array|$json_dynamic|$json_case_exact|$json_case_mismatch|$json_case_insensitive|$json_quoted_insensitive|$json_string|$json_array|$json_object|$json_spaced|$json_bool|$json_null|$json_missing|$json_invalid';
     }
 }
 

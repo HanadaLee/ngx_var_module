@@ -1,29 +1,41 @@
 ngx_addon_name=ngx_var_module
 
-# Check for cJSON library
-ngx_feature="cJSON library"
-ngx_feature_name="NGX_CJSON"
-ngx_feature_run=no
-ngx_feature_incs="#include <cjson/cJSON.h>"
-ngx_feature_path=
-ngx_feature_libs="-lcjson"
-ngx_feature_test="cJSON *json = cJSON_Parse(\"{}\");
-                  if (json) {
-                      (void) cJSON_GetObjectItemCaseSensitive(json, \"key\");
-                      cJSON_Delete(json);
-                  }"
-. auto/feature
+ngx_var_nginx_version=`awk '$1 == "#define" && $2 == "nginx_version" {
+                                print $3
+                            }' src/core/nginx.h`
 
-if [ "$ngx_found" = yes ]; then
-    ngx_var_cjson_libs="$ngx_feature_libs"
-else
+if [ -n "$ngx_var_nginx_version" \
+     -a "$ngx_var_nginx_version" -gt 1031005 ]; then
     ngx_var_cjson_libs=
 
-    cat << END
+else
+    # Check for cJSON library
+    ngx_feature="cJSON library"
+    ngx_feature_name="NGX_CJSON"
+    ngx_feature_run=no
+    ngx_feature_incs="#include <cjson/cJSON.h>"
+    ngx_feature_path=
+    ngx_feature_libs="-lcjson"
+    ngx_feature_test="cJSON *json = cJSON_Parse(\"{}\");
+                      if (json) {
+                          (void) cJSON_GetObjectItemCaseSensitive(json,
+                                                                  \"key\");
+                          cJSON_Delete(json);
+                      }"
+    . auto/feature
+
+    if [ "$ngx_found" = yes ]; then
+        ngx_var_cjson_libs="$ngx_feature_libs"
+
+    else
+        ngx_var_cjson_libs=
+
+        cat << END
 
 $0: warning: cJSON library not found, extract_json operation will not be available
 
 END
+    fi
 fi
 
 if [ "$HTTP" = YES ]; then

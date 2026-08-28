@@ -19,7 +19,9 @@
 #include <openssl/hmac.h>
 #endif
 
-#if (NGX_CJSON)
+#if (nginx_version > 1031005)
+#include <ngx_json_parse.h>
+#elif (NGX_CJSON)
 #include <cjson/cJSON.h>
 #endif
 
@@ -53,7 +55,7 @@ typedef enum {
     NGX_HTTP_VAR_FUNC_KEEP_PARAMS,
     NGX_HTTP_VAR_FUNC_REMOVE_PARAMS,
 
-#if (NGX_CJSON)
+#if (nginx_version > 1031005 || NGX_CJSON)
     NGX_HTTP_VAR_FUNC_EXTRACT_JSON,
 #endif
 
@@ -180,6 +182,48 @@ typedef struct {
 } ngx_http_var_ctx_t;
 
 
+#if (nginx_version > 1031005)
+
+typedef struct {
+    ngx_uint_t                     is_index;
+    ngx_str_t                      key;
+    ngx_uint_t                     index;
+} ngx_http_var_json_seg_t;
+
+
+typedef struct ngx_http_var_json_node_s  ngx_http_var_json_node_t;
+
+
+struct ngx_http_var_json_node_s {
+    ngx_http_var_json_seg_t        seg;
+    ngx_array_t                   *children;
+    ngx_uint_t                     terminal;
+};
+
+
+typedef struct {
+    ngx_uint_t                     index;
+    u_char                        *start;
+    ngx_http_var_json_node_t      *node;
+    ngx_uint_t                     is_array;
+} ngx_http_var_json_frame_t;
+
+
+typedef struct {
+    ngx_array_t                    stack;
+    ngx_str_t                      current_key;
+    ngx_http_var_json_node_t      *current_node;
+    ngx_http_var_json_node_t      *root;
+    ngx_str_t                      value;
+    ngx_uint_t                     found;
+    ngx_uint_t                     unescape;
+    ngx_uint_t                     compact;
+    ngx_uint_t                     ignore_case;
+} ngx_http_var_json_state_t;
+
+#endif
+
+
 #if (NGX_PCRE)
 
 typedef struct {
@@ -286,9 +330,29 @@ static ngx_int_t ngx_http_var_extract_param_handler(ngx_http_request_t *r,
 static ngx_int_t ngx_http_var_params_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 
-#if (NGX_CJSON)
+#if (nginx_version > 1031005 || NGX_CJSON)
 static ngx_int_t ngx_http_var_extract_json_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
+#endif
+#if (nginx_version > 1031005)
+static ngx_int_t ngx_http_var_json_parse_path(ngx_pool_t *pool,
+    ngx_http_var_json_node_t *root, ngx_str_t *path);
+static ngx_http_var_json_node_t *ngx_http_var_json_child(ngx_pool_t *pool,
+    ngx_http_var_json_node_t *parent, ngx_http_var_json_seg_t *seg);
+static ngx_int_t ngx_http_var_json_handler(ngx_json_ctx_t *ctx,
+    ngx_json_event_e event, ngx_str_t *token);
+static void ngx_http_var_json_inc_index(ngx_http_var_json_state_t *state);
+static ngx_http_var_json_node_t *ngx_http_var_json_lookup_key(
+    ngx_http_var_json_state_t *state, ngx_http_var_json_node_t *parent,
+    ngx_str_t *key);
+static ngx_http_var_json_node_t *ngx_http_var_json_lookup_index(
+    ngx_http_var_json_node_t *parent, ngx_uint_t index);
+static void ngx_http_var_json_store(ngx_http_var_json_state_t *state,
+    ngx_str_t *value, ngx_uint_t unescape, ngx_uint_t compact);
+static ngx_int_t ngx_http_var_json_push(ngx_http_var_json_state_t *state,
+    ngx_json_event_e event, u_char *start, ngx_http_var_json_node_t *node);
+static u_char *ngx_http_var_json_compact(u_char *dst, ngx_str_t *src);
+#elif (NGX_CJSON)
 static ngx_int_t ngx_http_var_json_path(ngx_pool_t *pool, cJSON **current,
     ngx_str_t *path, ngx_uint_t ignore_case);
 static ngx_int_t ngx_http_var_json_object_item(ngx_pool_t *pool,
@@ -452,7 +516,7 @@ static ngx_http_var_func_t  ngx_http_var_funcs[] = {
       NGX_HTTP_VAR_FUNC_REMOVE_PARAMS,
       4, NGX_HTTP_VAR_MAX_ARGS },
 
-#if (NGX_CJSON)
+#if (nginx_version > 1031005 || NGX_CJSON)
     { ngx_string("extract_json"),
       ngx_http_var_extract_json_handler,
       NGX_HTTP_VAR_FUNC_EXTRACT_JSON,
@@ -2940,7 +3004,699 @@ return_original:
 }
 
 
-#if (NGX_CJSON)
+#if (nginx_version > 1031005)
+
+static ngx_int_t
+ngx_http_var_json_parse_path(ngx_pool_t *pool,
+    ngx_http_var_json_node_t *root, ngx_str_t *path)
+{
+    u_char                    *p, *last, *start, *dst;
+    ngx_int_t                  index;
+    ngx_http_var_json_seg_t    seg;
+    ngx_http_var_json_node_t  *node;
+    enum {
+        sw_start = 0,
+        sw_key,
+        sw_dot,
+        sw_bracket,
+        sw_index,
+        sw_quoted,
+        sw_quoted_escape,
+        sw_quoted_close,
+        sw_after_bracket
+    } state;
+
+    if (path->len == 0) {
+        return NGX_ABORT;
+    }
+
+    node = root;
+    start = NULL;
+
+    last = path->data + path->len;
+    state = sw_start;
+
+    for (p = path->data; p < last; p++) {
+
+        switch (state) {
+
+        case sw_start:
+
+            if (*p == '[') {
+                state = sw_bracket;
+                break;
+            }
+
+            if (*p == '.' || *p == '$') {
+                goto invalid;
+            }
+
+            start = p;
+            state = sw_key;
+            break;
+
+        case sw_key:
+
+            if (*p == '.' || *p == '[') {
+
+                seg.is_index = 0;
+                seg.key.data = start;
+                seg.key.len = p - start;
+                seg.index = 0;
+
+                node = ngx_http_var_json_child(pool, node, &seg);
+                if (node == NULL) {
+                    return NGX_ERROR;
+                }
+
+                state = (*p == '.') ? sw_dot : sw_bracket;
+            }
+
+            break;
+
+        case sw_dot:
+
+            if (*p == '.' || *p == '[' || *p == '$') {
+                goto invalid;
+            }
+
+            start = p;
+            state = sw_key;
+            break;
+
+        case sw_bracket:
+
+            if (*p == '"') {
+                start = p + 1;
+                state = sw_quoted;
+                break;
+            }
+
+            if (*p >= '0' && *p <= '9') {
+                start = p;
+                state = sw_index;
+                break;
+            }
+
+            goto invalid;
+
+        case sw_index:
+
+            if (*p >= '0' && *p <= '9') {
+                break;
+            }
+
+            if (*p != ']') {
+                goto invalid;
+            }
+
+            index = ngx_atoi(start, p - start);
+            if (index == NGX_ERROR
+                || (ngx_uint_t) index > NGX_MAX_INT32_VALUE)
+            {
+                goto invalid;
+            }
+
+            seg.is_index = 1;
+            seg.index = index;
+            ngx_str_null(&seg.key);
+
+            node = ngx_http_var_json_child(pool, node, &seg);
+            if (node == NULL) {
+                return NGX_ERROR;
+            }
+
+            state = sw_after_bracket;
+            break;
+
+        case sw_quoted:
+
+            if (*p == '\\') {
+                state = sw_quoted_escape;
+                break;
+            }
+
+            if (*p == '"') {
+
+                dst = ngx_pnalloc(pool, (size_t) (p - start));
+                if (dst == NULL) {
+                    return NGX_ERROR;
+                }
+
+                ngx_memcpy(dst, start, p - start);
+
+                seg.is_index = 0;
+                seg.key.data = dst;
+                seg.key.len = p - start;
+                seg.index = 0;
+
+                if (ngx_json_unescape_string(&seg.key) != NGX_OK) {
+                    goto invalid;
+                }
+
+                node = ngx_http_var_json_child(pool, node, &seg);
+                if (node == NULL) {
+                    return NGX_ERROR;
+                }
+
+                state = sw_quoted_close;
+            }
+
+            break;
+
+        case sw_quoted_escape:
+
+            state = sw_quoted;
+            break;
+
+        case sw_quoted_close:
+
+            if (*p != ']') {
+                goto invalid;
+            }
+
+            state = sw_after_bracket;
+            break;
+
+        case sw_after_bracket:
+
+            if (*p == '.') {
+                state = sw_dot;
+                break;
+            }
+
+            if (*p == '[') {
+                state = sw_bracket;
+                break;
+            }
+
+            goto invalid;
+        }
+    }
+
+    switch (state) {
+
+    case sw_key:
+
+        seg.is_index = 0;
+        seg.key.data = start;
+        seg.key.len = last - start;
+        seg.index = 0;
+
+        node = ngx_http_var_json_child(pool, node, &seg);
+        if (node == NULL) {
+            return NGX_ERROR;
+        }
+
+        break;
+
+    case sw_after_bracket:
+        break;
+
+    default:
+        goto invalid;
+    }
+
+    node->terminal = 1;
+
+    return NGX_OK;
+
+invalid:
+
+    return NGX_ABORT;
+}
+
+
+static ngx_http_var_json_node_t *
+ngx_http_var_json_child(ngx_pool_t *pool,
+    ngx_http_var_json_node_t *parent, ngx_http_var_json_seg_t *seg)
+{
+    ngx_uint_t                  i;
+    ngx_http_var_json_seg_t    *cseg;
+    ngx_http_var_json_node_t   *child, *elts;
+
+    if (parent->children != NULL) {
+        elts = parent->children->elts;
+
+        for (i = 0; i < parent->children->nelts; i++) {
+            child = &elts[i];
+            cseg = &child->seg;
+
+            if (seg->is_index) {
+                if (cseg->is_index && cseg->index == seg->index) {
+                    return child;
+                }
+
+            } else {
+                if (!cseg->is_index
+                    && cseg->key.len == seg->key.len
+                    && ngx_memcmp(cseg->key.data, seg->key.data, seg->key.len)
+                       == 0)
+                {
+                    return child;
+                }
+            }
+        }
+
+    } else {
+        parent->children = ngx_array_create(pool, 1,
+                                            sizeof(ngx_http_var_json_node_t));
+        if (parent->children == NULL) {
+            return NULL;
+        }
+    }
+
+    child = ngx_array_push(parent->children);
+    if (child == NULL) {
+        return NULL;
+    }
+
+    ngx_memzero(child, sizeof(ngx_http_var_json_node_t));
+
+    child->seg = *seg;
+
+    return child;
+}
+
+
+static ngx_int_t
+ngx_http_var_json_handler(ngx_json_ctx_t *ctx, ngx_json_event_e event,
+    ngx_str_t *token)
+{
+    ngx_str_t                    slice;
+    ngx_uint_t                   is_member;
+    ngx_http_var_json_node_t    *node;
+    ngx_http_var_json_state_t   *state;
+    ngx_http_var_json_frame_t   *top;
+
+    state = ctx->data;
+
+    top = NULL;
+    if (state->stack.nelts) {
+        top = (ngx_http_var_json_frame_t *) state->stack.elts
+              + state->stack.nelts - 1;
+    }
+
+    switch (event) {
+
+    case NGX_JSON_OBJECT_OPEN:
+    case NGX_JSON_ARRAY_OPEN:
+
+        if (state->stack.nelts == 0) {
+
+            ngx_str_null(&state->current_key);
+            state->current_node = NULL;
+
+            return ngx_http_var_json_push(state, event, token->data,
+                                          state->root);
+        }
+
+        is_member = (state->current_key.data != NULL);
+        ngx_str_null(&state->current_key);
+
+        if (is_member) {
+            node = state->current_node;
+            state->current_node = NULL;
+
+        } else {
+            node = ngx_http_var_json_lookup_index(top->node, top->index);
+
+            ngx_http_var_json_inc_index(state);
+
+            if (node == NULL) {
+                return NGX_JSON_SKIP;
+            }
+        }
+
+        return ngx_http_var_json_push(state, event, token->data, node);
+
+    case NGX_JSON_OBJECT_CLOSE:
+    case NGX_JSON_ARRAY_CLOSE:
+
+        if (top != NULL) {
+
+            if (top->node->terminal) {
+                slice.data = top->start;
+                slice.len = token->data - top->start + 1;
+
+                ngx_http_var_json_store(state, &slice, 0, 1);
+            }
+
+            state->stack.nelts--;
+        }
+
+        break;
+
+    case NGX_JSON_KEY:
+
+        if (ngx_strlchr(token->data, token->data + token->len, '\\') == NULL) {
+            state->current_key = *token;
+
+        } else {
+            state->current_key.data = ngx_pstrdup(ctx->pool, token);
+            if (state->current_key.data == NULL) {
+                return NGX_ERROR;
+            }
+
+            state->current_key.len = token->len;
+
+            if (ngx_json_unescape_string(&state->current_key) != NGX_OK) {
+                return NGX_ERROR;
+            }
+        }
+
+        node = ngx_http_var_json_lookup_key(state, top->node,
+                                            &state->current_key);
+        if (node == NULL) {
+            ngx_str_null(&state->current_key);
+            state->current_node = NULL;
+            return NGX_JSON_SKIP;
+        }
+
+        state->current_node = node;
+
+        break;
+
+    case NGX_JSON_VALUE_STRING:
+    case NGX_JSON_VALUE_NUMBER:
+    case NGX_JSON_VALUE_BOOL:
+    case NGX_JSON_VALUE_NULL:
+
+        if (top == NULL) {
+            ngx_str_null(&state->current_key);
+            state->current_node = NULL;
+            break;
+        }
+
+        is_member = (state->current_key.data != NULL);
+        ngx_str_null(&state->current_key);
+
+        if (is_member) {
+            node = state->current_node;
+            state->current_node = NULL;
+
+        } else {
+            node = ngx_http_var_json_lookup_index(top->node, top->index);
+
+            ngx_http_var_json_inc_index(state);
+        }
+
+        if (node != NULL && node->terminal) {
+            ngx_http_var_json_store(state, token,
+                                    event == NGX_JSON_VALUE_STRING, 0);
+        }
+
+        break;
+    }
+
+    return NGX_OK;
+}
+
+
+static void
+ngx_http_var_json_inc_index(ngx_http_var_json_state_t *state)
+{
+    ngx_http_var_json_frame_t  *top;
+
+    if (state->stack.nelts == 0) {
+        return;
+    }
+
+    top = state->stack.elts;
+    top += state->stack.nelts - 1;
+
+    if (top->is_array) {
+        top->index++;
+    }
+}
+
+
+static ngx_http_var_json_node_t *
+ngx_http_var_json_lookup_key(ngx_http_var_json_state_t *state,
+    ngx_http_var_json_node_t *parent, ngx_str_t *key)
+{
+    ngx_int_t                   rc;
+    ngx_uint_t                  i;
+    ngx_http_var_json_seg_t    *seg;
+    ngx_http_var_json_node_t   *child, *elts;
+
+    if (parent->children == NULL) {
+        return NULL;
+    }
+
+    elts = parent->children->elts;
+
+    for (i = 0; i < parent->children->nelts; i++) {
+        child = &elts[i];
+        seg = &child->seg;
+
+        if (seg->is_index || seg->key.len != key->len) {
+            continue;
+        }
+
+        if (state->ignore_case) {
+            rc = ngx_strncasecmp(seg->key.data, key->data, key->len);
+
+        } else {
+            rc = ngx_memcmp(seg->key.data, key->data, key->len);
+        }
+
+        if (rc == 0) {
+            return child;
+        }
+    }
+
+    return NULL;
+}
+
+
+static ngx_http_var_json_node_t *
+ngx_http_var_json_lookup_index(ngx_http_var_json_node_t *parent,
+    ngx_uint_t index)
+{
+    ngx_uint_t                  i;
+    ngx_http_var_json_seg_t    *seg;
+    ngx_http_var_json_node_t   *child, *elts;
+
+    if (parent->children == NULL) {
+        return NULL;
+    }
+
+    elts = parent->children->elts;
+
+    for (i = 0; i < parent->children->nelts; i++) {
+        child = &elts[i];
+        seg = &child->seg;
+
+        if (seg->is_index && seg->index == index) {
+            return child;
+        }
+    }
+
+    return NULL;
+}
+
+
+static void
+ngx_http_var_json_store(ngx_http_var_json_state_t *state, ngx_str_t *value,
+    ngx_uint_t unescape, ngx_uint_t compact)
+{
+    state->value = *value;
+    state->found = 1;
+    state->unescape = unescape;
+    state->compact = compact;
+}
+
+
+static ngx_int_t
+ngx_http_var_json_push(ngx_http_var_json_state_t *state,
+    ngx_json_event_e event, u_char *start, ngx_http_var_json_node_t *node)
+{
+    ngx_http_var_json_frame_t  *frame;
+
+    frame = ngx_array_push(&state->stack);
+    if (frame == NULL) {
+        return NGX_ERROR;
+    }
+
+    frame->index = 0;
+    frame->start = start;
+    frame->is_array = (event == NGX_JSON_ARRAY_OPEN);
+    frame->node = node;
+
+    return NGX_OK;
+}
+
+
+static u_char *
+ngx_http_var_json_compact(u_char *dst, ngx_str_t *src)
+{
+    u_char     *p, *last;
+    ngx_uint_t  escaped, quoted;
+
+    escaped = 0;
+    quoted = 0;
+    last = src->data + src->len;
+
+    for (p = src->data; p < last; p++) {
+
+        if (quoted) {
+            *dst++ = *p;
+
+            if (escaped) {
+                escaped = 0;
+
+            } else if (*p == '\\') {
+                escaped = 1;
+
+            } else if (*p == '"') {
+                quoted = 0;
+            }
+
+            continue;
+        }
+
+        if (*p == '"') {
+            quoted = 1;
+            *dst++ = *p;
+
+        } else if (!ngx_http_var_isspace(*p)) {
+            *dst++ = *p;
+        }
+    }
+
+    return dst;
+}
+
+
+static ngx_int_t
+ngx_http_var_extract_json_handler(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
+{
+    u_char                    *p;
+    ngx_int_t                  rc;
+    ngx_str_t                  val, path, result;
+    ngx_json_ctx_t             ctx;
+    ngx_http_complex_value_t  *args;
+    ngx_http_var_json_node_t  *root;
+    ngx_http_var_json_state_t  state;
+
+    args = rule->args->elts;
+
+    if (ngx_http_complex_value(r, &args[0], &val) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    while (val.len && ngx_http_var_isspace(val.data[0])) {
+        val.data++;
+        val.len--;
+    }
+
+    while (val.len && ngx_http_var_isspace(val.data[val.len - 1])) {
+        val.len--;
+    }
+
+    if (val.len == 0) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    if (ngx_http_complex_value(r, &args[1], &path) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    root = ngx_pcalloc(r->pool, sizeof(ngx_http_var_json_node_t));
+    if (root == NULL) {
+        return NGX_ERROR;
+    }
+
+    rc = ngx_http_var_json_parse_path(r->pool, root, &path);
+
+    if (rc == NGX_ABORT) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "var %V: invalid JSON path \"%V\"",
+                      &rule->func->name, &path);
+        return NGX_ERROR;
+    }
+
+    if (rc != NGX_OK) {
+        goto failed;
+    }
+
+    ngx_memzero(&state, sizeof(ngx_http_var_json_state_t));
+
+    state.root = root;
+    state.ignore_case = rule->ignore_case;
+
+    if (ngx_array_init(&state.stack, r->pool, 8,
+                       sizeof(ngx_http_var_json_frame_t))
+        != NGX_OK)
+    {
+        goto failed;
+    }
+
+    ngx_json_ctx_init(&ctx, r->pool);
+
+    ctx.handler = ngx_http_var_json_handler;
+    ctx.data = &state;
+
+    rc = ngx_json_parse_ctx(&ctx, val.data, val.len);
+
+    if (rc == NGX_DECLINED) {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "var %V: input is not valid JSON",
+                      &rule->func->name);
+        return NGX_ERROR;
+    }
+
+    if (rc != NGX_OK) {
+        goto failed;
+    }
+
+    if (!state.found) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    if (state.value.len == 0) {
+        v->len = 0;
+        v->data = (u_char *) "";
+        return NGX_OK;
+    }
+
+    result.data = ngx_pnalloc(r->pool, state.value.len);
+    if (result.data == NULL) {
+        goto failed;
+    }
+
+    if (state.compact) {
+        p = ngx_http_var_json_compact(result.data, &state.value);
+        result.len = p - result.data;
+
+    } else {
+        ngx_memcpy(result.data, state.value.data, state.value.len);
+        result.len = state.value.len;
+    }
+
+    if (state.unescape && ngx_json_unescape_string(&result) != NGX_OK) {
+        goto failed;
+    }
+
+    v->len = result.len;
+    v->data = result.data;
+
+    return NGX_OK;
+
+failed:
+
+    ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                  "var %V: failed to extract JSON value",
+                  &rule->func->name);
+
+    return NGX_ERROR;
+}
+
+#elif (NGX_CJSON)
 
 static ngx_int_t
 ngx_http_var_json_object_item(ngx_pool_t *pool, cJSON **current,
