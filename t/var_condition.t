@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-# Tests for indexed variable lookup with ngx_condition_module.
+# Tests for indexed variable lookup with ngx_expr_module.
 
 ###############################################################################
 
@@ -19,7 +19,7 @@ select STDERR; $| = 1;
 select STDOUT; $| = 1;
 
 my $t = Test::Nginx->new()
-    ->has(qw/http stream stream_return ngx_condition_module ngx_var_module/)
+    ->has(qw/http stream stream_return ngx_expr_module ngx_var_module/)
     ->plan(20);
 
 $t->write_file_expand('nginx.conf', <<'EOF');
@@ -37,15 +37,15 @@ http {
     log_format index_padding '$arg_pad00$arg_pad01$arg_pad02$arg_pad03'
                              '$arg_pad04$arg_pad05$arg_pad06$arg_pad07';
 
-    condition h_true bool true;
-    condition h_false bool false;
-    condition h_location = $arg_location 1;
-    condition h_child = $arg_child 1;
-    condition h_parent = $arg_parent 1;
-    condition h_only = $arg_only 1;
-    condition h_self != $http_self "";
-    condition h_cycle_a != $http_cycle_b "";
-    condition h_cycle_b != $http_cycle_a "";
+    expr h_true bool true;
+    expr h_false bool false;
+    expr h_location = $arg_location 1;
+    expr h_child = $arg_child 1;
+    expr h_parent = $arg_parent 1;
+    expr h_only = $arg_only 1;
+    expr h_self != $http_self "";
+    expr h_cycle_a != $http_cycle_b "";
+    expr h_cycle_b != $http_cycle_a "";
 
     when h_parent {
         var $http_chain set parent-hit;
@@ -131,11 +131,11 @@ stream {
     map $remote_addr $pad03 { default pad; }
     log_format index_padding '$pad00$pad01$pad02$pad03';
 
-    condition s_true bool true;
-    condition s_false bool false;
-    condition s_self != $stream_self "";
-    condition s_cycle_a != $stream_cycle_b "";
-    condition s_cycle_b != $stream_cycle_a "";
+    expr s_true bool true;
+    expr s_false bool false;
+    expr s_self != $stream_self "";
+    expr s_cycle_a != $stream_cycle_b "";
+    expr s_cycle_b != $stream_cycle_a "";
 
     when s_true {
         var $stream_chain set parent-hit;

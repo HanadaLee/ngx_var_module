@@ -10,8 +10,8 @@
 #include <ngx_md5.h>
 #include <ngx_sha1.h>
 
-#if (NGX_CONDITION)
-#include <ngx_http_condition_module.h>
+#if (NGX_EXPR)
+#include <ngx_http_expr_module.h>
 #endif
 
 #if (NGX_OPENSSL)
@@ -147,8 +147,8 @@ struct ngx_http_var_rule_s {
     ngx_http_var_func_t           *func;        /* function definition */
     ngx_uint_t                     ignore_case; /* ignore case sensitivity */
     ngx_array_t                   *args;        /* function extra args */
-#if (NGX_CONDITION)
-    ngx_condition_expr_id_t        expr_id;     /* associated expression */
+#if (NGX_EXPR)
+    ngx_expr_when_id_t             expr_id;     /* associated expression */
 #else
     ngx_http_complex_value_t      *filter;      /* filter complex value */
     ngx_uint_t                     negative;    /* negative filter */
@@ -808,7 +808,7 @@ static ngx_command_t  ngx_http_var_commands[] = {
 
     { ngx_string("var"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF
-#if (NGX_CONDITION)
+#if (NGX_EXPR)
                         |NGX_HTTP_MAIN_WHEN_CONF|NGX_HTTP_SRV_WHEN_CONF
                         |NGX_HTTP_LOC_WHEN_CONF
 #endif
@@ -950,8 +950,8 @@ ngx_http_var_finalize_variable(ngx_http_var_variable_t *var)
 
     for (i = 0; i < var->rules->nelts; i++) {
 
-#if (NGX_CONDITION)
-        if (rules[i].expr_id != NGX_CONDITION_NO_EXPR_ID) {
+#if (NGX_EXPR)
+        if (rules[i].expr_id != NGX_EXPR_NO_WHEN_ID) {
             continue;
         }
 #else
@@ -1073,7 +1073,7 @@ ngx_http_var_parser(ngx_conf_t *cf, ngx_http_var_func_t *func,
 {
     ngx_str_t                  *value;
     ngx_uint_t                  first, last, nargs;
-#if !(NGX_CONDITION)
+#if !(NGX_EXPR)
     ngx_str_t                   filter_value;
     ngx_http_complex_value_t   *filter;
     ngx_uint_t                  negative;
@@ -1082,7 +1082,7 @@ ngx_http_var_parser(ngx_conf_t *cf, ngx_http_var_func_t *func,
     value = cf->args->elts;
     last = cf->args->nelts - 1;
 
-#if (NGX_CONDITION)
+#if (NGX_EXPR)
 
     if (cf->args->nelts > 3
         && ((value[last].len >= 3
@@ -1159,8 +1159,8 @@ ngx_http_var_parser(ngx_conf_t *cf, ngx_http_var_func_t *func,
         return NGX_ERROR;
     }
 
-#if (NGX_CONDITION)
-    rule->expr_id = ngx_condition_get_associated_expr_id(cf);
+#if (NGX_EXPR)
+    rule->expr_id = ngx_expr_get_associated_when_id(cf);
 #else
     rule->filter = filter;
     rule->negative = negative;
@@ -1503,7 +1503,7 @@ ngx_http_var_select_rule(ngx_http_request_t *r,
 {
     ngx_http_var_rule_t        *rules;
     ngx_uint_t                  i;
-#if !(NGX_CONDITION)
+#if !(NGX_EXPR)
     ngx_str_t                   val;
 #endif
 
@@ -1511,9 +1511,8 @@ ngx_http_var_select_rule(ngx_http_request_t *r,
 
     for (i = 0; i < var->conditional_nrules; i++) {
 
-#if (NGX_CONDITION)
-        if (ngx_http_condition_get_expr_result(r, rules[i].expr_id)
-            != NGX_CONDITION_EXPR_HIT)
+#if (NGX_EXPR)
+        if (ngx_http_expr_get_result(r, rules[i].expr_id) != NGX_EXPR_WHEN_HIT)
         {
             continue;
         }

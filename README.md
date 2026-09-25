@@ -23,7 +23,7 @@ Both modules dynamically assign new variables through predefined functions.
 
 This Nginx module is currently considered experimental. Issues and PRs are welcome if you encounter any problems.
 
-> The condition variable definition operator has been removed. Please migrate to ngx_condition_module.
+> The condition variable definition operator has been removed. Please migrate to ngx_expr_module.
 > ```nginx
 > # before
 > var $bool_var str_eq $uri /abc;   # deprecated
@@ -131,14 +131,14 @@ build both modules:
 Without `--with-stream`, only `ngx_http_var_module` is built. With Stream
 enabled, the same build also includes `ngx_stream_var_module`.
 
-To enable named conditions, build `ngx_condition_module` and this module statically in the same nginx configuration.
+To enable named conditions, build `ngx_expr_module` and this module statically in the same nginx configuration.
 
 # Conditional syntax
 
 Conditional syntax is selected at compile time:
 
-- With `ngx_condition_module`, use named `condition` expressions and place `var` inside an HTTP or Stream `when` block at a context supported by the corresponding module. `if=` and `if!=` parameters are rejected.
-- Without `ngx_condition_module`, `when` is unavailable and legacy `if=`/`if!=` parameters remain supported. `if=` matches a non-empty value other than `"0"`; `if!=` matches an empty value or `"0"`.
+- With `ngx_expr_module`, use named `expr` expressions and place `var` inside an HTTP or Stream `when` block at a context supported by the corresponding module. `if=` and `if!=` parameters are rejected.
+- Without `ngx_expr_module`, `when` is unavailable and legacy `if=`/`if!=` parameters remain supported. `if=` matches a non-empty value other than `"0"`; `if!=` matches an empty value or `"0"`.
 
 If a condition does not match, the definition is skipped and the next definition of the same variable is evaluated.
 
@@ -469,11 +469,11 @@ All parameters except regular expressions can contain variables. However, incorr
 
 Variables defined with the `var` directive can be overwritten by HTTP or Stream directives that assign the same variable.
 
-With `ngx_condition_module`, conditional definitions use `when`. Multiple names in one `when` block are combined with AND, and a condition name can be negated with a `!` prefix:
+With `ngx_expr_module`, conditional definitions use `when`. Multiple names in one `when` block are combined with AND, and a condition name can be negated with a `!` prefix:
 
 ```nginx
-condition has_header_a is_not_empty $http_a;
-condition has_header_b is_not_empty $http_b;
+expr has_header_a !is_empty $http_a;
+expr has_header_b !is_empty $http_b;
 
 # When request header A is present, the value of the variable is 'have-header-a'
 when has_header_a {
@@ -489,13 +489,13 @@ when !has_header_a has_header_b {
 var $new_var set not-have-a-or-b;
 ```
 
-Without `ngx_condition_module`, express the same chain with legacy `if=`/`if!=` parameters.
+Without `ngx_expr_module`, express the same chain with legacy `if=`/`if!=` parameters.
 
 The same conditional model is available in Stream. For example:
 
 ```nginx
-condition has_sni is_not_empty $ssl_preread_server_name;
-condition is_example str_eq -i $ssl_preread_server_name example.com;
+expr has_sni !is_empty $ssl_preread_server_name;
+expr is_example str_eq -i $ssl_preread_server_name example.com;
 
 when has_sni is_example {
     var $new_var set example-sni;
@@ -511,7 +511,7 @@ var $new_var set other-sni;
 # Testing
 
 The test suite uses the nginx-tests framework. Run the legacy condition tests
-with an nginx binary built without `ngx_condition_module`:
+with an nginx binary built without `ngx_expr_module`:
 
 ```bash
 TEST_NGINX_BINARY=/path/to/nginx \
@@ -519,7 +519,7 @@ TEST_NGINX_BINARY=/path/to/nginx \
 ```
 
 Run the named condition tests with an nginx binary that includes both this
-module and `ngx_condition_module`:
+module and `ngx_expr_module`:
 
 ```bash
 TEST_NGINX_BINARY=/path/to/nginx-with-condition \

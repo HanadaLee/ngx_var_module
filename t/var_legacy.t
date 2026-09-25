@@ -22,7 +22,7 @@ my $t = Test::Nginx->new()
     ->has(qw/http stream stream_return ngx_var_module/);
 
 plan(skip_all => 'legacy if conditions require a build without condition')
-    if $t->has_module('ngx_condition_module');
+    if $t->has_module('ngx_expr_module');
 
 $t->plan(17);
 
