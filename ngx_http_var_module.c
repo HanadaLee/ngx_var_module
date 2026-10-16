@@ -3011,6 +3011,9 @@ ngx_http_var_json_parse_path(ngx_pool_t *pool,
 {
     u_char                    *p, *last, *start, *dst;
     ngx_int_t                  index;
+#if (nginx_version >= 1031008)
+    ngx_str_t                  key;
+#endif
     ngx_http_var_json_seg_t    seg;
     ngx_http_var_json_node_t  *node;
     enum {
@@ -3142,14 +3145,23 @@ ngx_http_var_json_parse_path(ngx_pool_t *pool,
                     return NGX_ERROR;
                 }
 
+#if (nginx_version < 1031008)
                 ngx_memcpy(dst, start, p - start);
+#endif
 
                 seg.is_index = 0;
                 seg.key.data = dst;
                 seg.key.len = p - start;
                 seg.index = 0;
 
+#if (nginx_version >= 1031008)
+                key.data = start;
+                key.len = p - start;
+
+                if (ngx_json_unescape_string(&seg.key, &key) != NGX_OK) {
+#else
                 if (ngx_json_unescape_string(&seg.key) != NGX_OK) {
+#endif
                     goto invalid;
                 }
 
@@ -3347,19 +3359,32 @@ ngx_http_var_json_handler(ngx_json_ctx_t *ctx, ngx_json_event_e event,
         break;
 
     case NGX_JSON_KEY:
+#if (nginx_version >= 1031008)
+    case NGX_JSON_KEY_ESCAPED:
 
+        if (event == NGX_JSON_KEY) {
+#else
         if (ngx_strlchr(token->data, token->data + token->len, '\\') == NULL) {
+#endif
             state->current_key = *token;
 
         } else {
+#if (nginx_version >= 1031008)
+            state->current_key.data = ngx_pnalloc(ctx->pool, token->len);
+#else
             state->current_key.data = ngx_pstrdup(ctx->pool, token);
+#endif
             if (state->current_key.data == NULL) {
                 return NGX_ERROR;
             }
 
             state->current_key.len = token->len;
 
+#if (nginx_version >= 1031008)
+            if (ngx_json_unescape_string(&state->current_key, token) != NGX_OK) {
+#else
             if (ngx_json_unescape_string(&state->current_key) != NGX_OK) {
+#endif
                 return NGX_ERROR;
             }
         }
@@ -3377,6 +3402,9 @@ ngx_http_var_json_handler(ngx_json_ctx_t *ctx, ngx_json_event_e event,
         break;
 
     case NGX_JSON_VALUE_STRING:
+#if (nginx_version >= 1031008)
+    case NGX_JSON_VALUE_STRING_ESCAPED:
+#endif
     case NGX_JSON_VALUE_NUMBER:
     case NGX_JSON_VALUE_BOOL:
     case NGX_JSON_VALUE_NULL:
@@ -3401,8 +3429,13 @@ ngx_http_var_json_handler(ngx_json_ctx_t *ctx, ngx_json_event_e event,
         }
 
         if (node != NULL && node->terminal) {
+#if (nginx_version >= 1031008)
+            ngx_http_var_json_store(state, token,
+                                    event == NGX_JSON_VALUE_STRING_ESCAPED, 0);
+#else
             ngx_http_var_json_store(state, token,
                                     event == NGX_JSON_VALUE_STRING, 0);
+#endif
         }
 
         break;
@@ -3672,14 +3705,25 @@ ngx_http_var_extract_json_handler(ngx_http_request_t *r,
         p = ngx_http_var_json_compact(result.data, &state.value);
         result.len = p - result.data;
 
+#if (nginx_version >= 1031008)
+    } else if (state.unescape) {
+        result.len = state.value.len;
+
+        if (ngx_json_unescape_string(&result, &state.value) != NGX_OK) {
+            goto failed;
+        }
+
+#endif
     } else {
         ngx_memcpy(result.data, state.value.data, state.value.len);
         result.len = state.value.len;
     }
 
+#if (nginx_version < 1031008)
     if (state.unescape && ngx_json_unescape_string(&result) != NGX_OK) {
         goto failed;
     }
+#endif
 
     v->len = result.len;
     v->data = result.data;
