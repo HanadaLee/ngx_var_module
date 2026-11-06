@@ -156,6 +156,7 @@ struct ngx_stream_var_rule_s {
 
 #if (NGX_PCRE)
     ngx_stream_regex_t            *regex;       /* compiled regex */
+    ngx_uint_t                     utf8;
 #endif
 };
 
@@ -1304,6 +1305,12 @@ ngx_stream_var_compile_regex(ngx_conf_t *cf,
     ngx_regex_compile_t          rc;
     u_char                       errstr[NGX_MAX_CONF_ERRSTR];
 
+#if (NGX_PCRE2)
+    uint32_t                     options;
+#else
+    unsigned long                options;
+#endif
+
     rule->args = ngx_array_create(cf->pool, 2,
                                   sizeof(ngx_stream_complex_value_t));
     if (rule->args == NULL) {
@@ -1336,6 +1343,27 @@ ngx_stream_var_compile_regex(ngx_conf_t *cf,
     if (rule->regex == NULL) {
         return NGX_ERROR;
     }
+
+#if (NGX_PCRE2)
+    if (pcre2_pattern_info(rule->regex->regex, PCRE2_INFO_ALLOPTIONS,
+                          &options) != 0)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "pcre2_pattern_info() failed");
+        return NGX_ERROR;
+    }
+
+    rule->utf8 = (options & PCRE2_UTF) != 0;
+#else
+    if (pcre_fullinfo(rule->regex->regex->code, rule->regex->regex->extra,
+                      PCRE_INFO_OPTIONS, &options) != 0)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "pcre_fullinfo() failed");
+        return NGX_ERROR;
+    }
+
+    rule->utf8 = (options & PCRE_UTF8) != 0;
+#endif
 
     cv = ngx_array_push(rule->args);
     if (cv == NULL) {
@@ -4298,10 +4326,18 @@ ngx_stream_var_regex_gsub_handler(ngx_stream_session_t *s,
         search_offset = end;
 
         if (start == end) {
+            if (search_offset == val.len) {
+                break;
+            }
+
             search_offset++;
 
-            if (search_offset > val.len) {
-                break;
+            if (rule->utf8) {
+                while (search_offset < val.len
+                       && (val.data[search_offset] & 0xc0) == 0x80)
+                {
+                    search_offset++;
+                }
             }
         }
     }

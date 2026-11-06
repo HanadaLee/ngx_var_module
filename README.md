@@ -278,6 +278,8 @@ var $new_var regex_capture [-i] src_str regex assign_value;
 var $new_var regex_sub [-i] src_str regex replacement;
 
 # Globally substitute regex (requires PCRE/PCRE2)
+# In UTF mode, zero-length matches advance by one UTF-8 code point.
+# Matching remains byte-oriented by default.
 var $new_var regex_gsub [-i] src_str regex replacement;
 
 
