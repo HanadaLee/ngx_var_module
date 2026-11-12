@@ -134,6 +134,11 @@ typedef struct ngx_http_var_func_s  ngx_http_var_func_t;
 typedef struct ngx_http_var_variable_s  ngx_http_var_variable_t;
 typedef struct ngx_http_var_eval_s  ngx_http_var_eval_t;
 
+#if (nginx_version >= 1031005)
+typedef struct ngx_http_var_json_node_s  ngx_http_var_json_node_t;
+#endif
+
+
 typedef ngx_int_t (*ngx_http_var_func_pt)(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 
@@ -170,9 +175,22 @@ struct ngx_http_var_rule_s {
     ngx_uint_t                     negative;    /* negative filter */
 #endif
 
+#if (NGX_PCRE || nginx_version >= 1031005)
+    union {
 #if (NGX_PCRE)
-    ngx_http_regex_t              *regex;       /* compiled regex */
-    ngx_uint_t                     utf8;
+        struct {
+            ngx_http_regex_t  *regex;
+            ngx_uint_t         utf8;
+        } re;
+#endif
+
+#if (nginx_version >= 1031005)
+        struct {
+            ngx_http_var_json_node_t  *root;
+            ngx_uint_t                 invalid;
+        } json;
+#endif
+    } u;
 #endif
 };
 
@@ -211,9 +229,6 @@ typedef struct {
     ngx_str_t                      key;
     ngx_uint_t                     index;
 } ngx_http_var_json_seg_t;
-
-
-typedef struct ngx_http_var_json_node_s  ngx_http_var_json_node_t;
 
 
 struct ngx_http_var_json_node_s {
@@ -1326,6 +1341,11 @@ ngx_http_var_compile_args(ngx_conf_t *cf, ngx_http_var_rule_t *rule,
     ngx_http_complex_value_t  *cv;
     ngx_uint_t                 i;
 
+#if (nginx_version >= 1031005)
+    ngx_int_t                  rc;
+    ngx_http_var_json_node_t  *root;
+#endif
+
     rule->args = ngx_array_create(cf->pool, ngx_max(nargs, 1),
                                   sizeof(ngx_http_complex_value_t));
     if (rule->args == NULL) {
@@ -1344,6 +1364,27 @@ ngx_http_var_compile_args(ngx_conf_t *cf, ngx_http_var_rule_t *rule,
             return NGX_ERROR;
         }
     }
+
+#if (nginx_version >= 1031005)
+    if (rule->func->type == NGX_HTTP_VAR_FUNC_EXTRACT_JSON) {
+        cv = rule->args->elts;
+
+        if (cv[1].lengths == NULL) {
+            root = ngx_pcalloc(cf->pool, sizeof(ngx_http_var_json_node_t));
+            if (root == NULL) {
+                return NGX_ERROR;
+            }
+
+            rc = ngx_http_var_json_parse_path(cf->pool, root, &cv[1].value);
+            if (rc == NGX_ERROR) {
+                return NGX_ERROR;
+            }
+
+            rule->u.json.root = root;
+            rule->u.json.invalid = (rc == NGX_ABORT);
+        }
+    }
+#endif
 
     return NGX_OK;
 }
@@ -1393,13 +1434,13 @@ ngx_http_var_compile_regex(ngx_conf_t *cf,
         rc.options = NGX_REGEX_CASELESS;
     }
 
-    rule->regex = ngx_http_regex_compile(cf, &rc);
-    if (rule->regex == NULL) {
+    rule->u.re.regex = ngx_http_regex_compile(cf, &rc);
+    if (rule->u.re.regex == NULL) {
         return NGX_ERROR;
     }
 
 #if (NGX_PCRE2)
-    if (pcre2_pattern_info(rule->regex->regex, PCRE2_INFO_ALLOPTIONS,
+    if (pcre2_pattern_info(rule->u.re.regex->regex, PCRE2_INFO_ALLOPTIONS,
                            &options) != 0)
     {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
@@ -1407,17 +1448,17 @@ ngx_http_var_compile_regex(ngx_conf_t *cf,
         return NGX_ERROR;
     }
 
-    rule->utf8 = (options & PCRE2_UTF) != 0;
+    rule->u.re.utf8 = (options & PCRE2_UTF) != 0;
 #else
-    if (pcre_fullinfo(rule->regex->regex->code,
-                      rule->regex->regex->extra,
+    if (pcre_fullinfo(rule->u.re.regex->regex->code,
+                      rule->u.re.regex->regex->extra,
                       PCRE_INFO_OPTIONS, &options) != 0)
     {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "pcre_fullinfo() failed");
         return NGX_ERROR;
     }
 
-    rule->utf8 = (options & PCRE_UTF8) != 0;
+    rule->u.re.utf8 = (options & PCRE_UTF8) != 0;
 #endif
 
     cv = ngx_array_push(rule->args);
@@ -3679,12 +3720,19 @@ ngx_http_var_extract_json_handler(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    root = ngx_pcalloc(r->pool, sizeof(ngx_http_var_json_node_t));
-    if (root == NULL) {
-        return NGX_ERROR;
-    }
+    root = rule->u.json.root;
 
-    rc = ngx_http_var_json_parse_path(r->pool, root, &path);
+    if (root != NULL) {
+        rc = rule->u.json.invalid ? NGX_ABORT : NGX_OK;
+
+    } else {
+        root = ngx_pcalloc(r->pool, sizeof(ngx_http_var_json_node_t));
+        if (root == NULL) {
+            return NGX_ERROR;
+        }
+
+        rc = ngx_http_var_json_parse_path(r->pool, root, &path);
+    }
 
     if (rc == NGX_ABORT) {
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
@@ -4147,7 +4195,7 @@ ngx_http_var_regex_capture_handler(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    rc = ngx_http_regex_exec(r, rule->regex, &val);
+    rc = ngx_http_regex_exec(r, rule->u.re.regex, &val);
 
     if (rc == NGX_DECLINED) {
         v->len = 0;
@@ -4194,7 +4242,7 @@ ngx_http_var_regex_sub_handler(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    rc = ngx_http_var_helper_regex_exec(r, rule->regex, &val, 0, &ctx);
+    rc = ngx_http_var_helper_regex_exec(r, rule->u.re.regex, &val, 0, &ctx);
 
     if (rc == NGX_DECLINED) {
         ngx_http_var_helper_regex_cleanup(&ctx);
@@ -4309,7 +4357,7 @@ ngx_http_var_regex_gsub_handler(ngx_http_request_t *r,
     matched = 0;
 
     for ( ;; ) {
-        rc = ngx_http_var_helper_regex_exec(r, rule->regex, &val,
+        rc = ngx_http_var_helper_regex_exec(r, rule->u.re.regex, &val,
                                             search_offset, &ctx);
 
         if (rc == NGX_DECLINED) {
@@ -4358,7 +4406,7 @@ ngx_http_var_regex_gsub_handler(ngx_http_request_t *r,
 
             search_offset++;
 
-            if (rule->utf8) {
+            if (rule->u.re.utf8) {
                 while (search_offset < val.len
                        && (val.data[search_offset] & 0xc0) == 0x80)
                 {
