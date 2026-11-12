@@ -131,6 +131,7 @@ typedef enum {
 typedef struct ngx_stream_var_rule_s  ngx_stream_var_rule_t;
 typedef struct ngx_stream_var_func_s  ngx_stream_var_func_t;
 typedef struct ngx_stream_var_variable_s  ngx_stream_var_variable_t;
+typedef struct ngx_stream_var_eval_s  ngx_stream_var_eval_t;
 
 typedef ngx_int_t (*ngx_stream_var_func_pt)(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
@@ -176,9 +177,14 @@ typedef struct {
 } ngx_stream_var_random_value_t;
 
 
+struct ngx_stream_var_eval_s {
+    ngx_uint_t                     index;
+    ngx_stream_var_eval_t         *prev;
+};
+
+
 typedef struct {
-    u_char                        *locked_vars;
-    ngx_uint_t                     nlocked_vars;
+    ngx_stream_var_eval_t         *evaluating;
     ngx_array_t                   *random_values;
 } ngx_stream_var_ctx_t;
 
@@ -269,10 +275,6 @@ static ngx_int_t ngx_stream_var_compile_regex(ngx_conf_t *cf,
 #endif
 
 static ngx_stream_var_ctx_t *ngx_stream_var_get_ctx(ngx_stream_session_t *s);
-static ngx_int_t ngx_stream_variable_acquire_lock(ngx_stream_session_t *s,
-    ngx_stream_var_variable_t *var);
-static void ngx_stream_variable_release_lock(ngx_stream_session_t *s,
-    ngx_uint_t index);
 static ngx_int_t ngx_stream_var_get_cached_random(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
 static ngx_int_t ngx_stream_var_cache_random(ngx_stream_session_t *s,
@@ -1379,8 +1381,7 @@ ngx_stream_var_compile_regex(ngx_conf_t *cf,
 static ngx_stream_var_ctx_t *
 ngx_stream_var_get_ctx(ngx_stream_session_t *s)
 {
-    ngx_stream_core_main_conf_t  *cmcf;
-    ngx_stream_var_ctx_t         *ctx;
+    ngx_stream_var_ctx_t  *ctx;
 
     /* attempt to get the current request context */
     ctx = ngx_stream_get_module_ctx(s, ngx_stream_var_module);
@@ -1394,66 +1395,9 @@ ngx_stream_var_get_ctx(ngx_stream_session_t *s)
         return NULL;
     }
 
-    cmcf = ngx_stream_get_module_main_conf(s, ngx_stream_core_module);
-    ctx->nlocked_vars = cmcf->variables.nelts;
-
-    ctx->locked_vars = ngx_pcalloc(s->connection->pool, ctx->nlocked_vars);
-    if (ctx->locked_vars == NULL) {
-        return NULL;
-    }
-
     ngx_stream_set_ctx(s, ctx, ngx_stream_var_module);
 
     return ctx;
-}
-
-
-static ngx_int_t
-ngx_stream_variable_acquire_lock(ngx_stream_session_t *s,
-    ngx_stream_var_variable_t *var)
-{
-    ngx_stream_var_ctx_t  *ctx;
-    ngx_uint_t             index;
-
-    /* get or create the context */
-    ctx = ngx_stream_var_get_ctx(s);
-    if (ctx == NULL) {
-        return NGX_ERROR;
-    }
-
-    index = (ngx_uint_t) var->index;
-
-    if (index >= ctx->nlocked_vars) {
-        ngx_log_error(NGX_LOG_ALERT, s->connection->log, 0,
-                      "var: invalid variable index %i", var->index);
-        return NGX_ERROR;
-    }
-
-    if (ctx->locked_vars[index]) {
-        ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
-                      "var: circular reference detected "
-                      "for variable \"%V\"", &var->name);
-        return NGX_ERROR;
-    }
-
-    ctx->locked_vars[index] = 1;
-
-    return NGX_OK;
-}
-
-
-static void
-ngx_stream_variable_release_lock(ngx_stream_session_t *s, ngx_uint_t index)
-{
-    ngx_stream_var_ctx_t  *ctx;
-
-    /* get the current request context */
-    ctx = ngx_stream_get_module_ctx(s, ngx_stream_var_module);
-    if (ctx == NULL || index >= ctx->nlocked_vars) {
-        return;
-    }
-
-    ctx->locked_vars[index] = 0;
 }
 
 
@@ -1579,11 +1523,13 @@ static ngx_int_t
 ngx_stream_var_variable_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, uintptr_t data)
 {
-    ngx_stream_var_conf_t        *vcf;
-    ngx_stream_var_variable_t    *var;
-    ngx_stream_var_rule_t        *rule;
-    ngx_int_t                     rc;
-    ngx_uint_t                    index;
+    ngx_stream_var_conf_t      *vcf;
+    ngx_stream_var_variable_t  *var;
+    ngx_stream_var_rule_t      *rule;
+    ngx_stream_var_ctx_t       *ctx;
+    ngx_stream_var_eval_t       eval, *p;
+    ngx_int_t                   rc;
+    ngx_uint_t                  index;
 
     vcf = ngx_stream_get_module_srv_conf(s, ngx_stream_var_module);
     index = (ngx_uint_t) data;
@@ -1607,20 +1553,37 @@ ngx_stream_var_variable_handler(ngx_stream_session_t *s,
     ngx_log_debug1(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
                    "var: variable \"%V\" definition found", &var->name);
 
-    if (ngx_stream_variable_acquire_lock(s, var) != NGX_OK) {
+    ctx = ngx_stream_var_get_ctx(s);
+    if (ctx == NULL) {
         v->not_found = 1;
         return NGX_ERROR;
     }
 
+    for (p = ctx->evaluating; p; p = p->prev) {
+        if (p->index == index) {
+            ngx_log_error(NGX_LOG_ERR, s->connection->log, 0,
+                          "var: circular reference detected "
+                          "for variable \"%V\"", &var->name);
+            v->not_found = 1;
+            return NGX_ERROR;
+        }
+    }
+
+    /* Variable handlers complete synchronously. */
+
+    eval.index = index;
+    eval.prev = ctx->evaluating;
+    ctx->evaluating = &eval;
+
     rc = ngx_stream_var_select_rule(s, var, &rule);
 
     if (rc == NGX_ERROR) {
-        ngx_stream_variable_release_lock(s, index);
+        ctx->evaluating = eval.prev;
         return NGX_ERROR;
     }
 
     if (rc != NGX_OK) {
-        ngx_stream_variable_release_lock(s, index);
+        ctx->evaluating = eval.prev;
         v->not_found = 1;
         return NGX_OK;
     }
@@ -1631,7 +1594,7 @@ ngx_stream_var_variable_handler(ngx_stream_session_t *s,
 
     rc = rule->func->handler(s, v, rule);
 
-    ngx_stream_variable_release_lock(s, index);
+    ctx->evaluating = eval.prev;
 
     if (rc != NGX_OK) {
         v->not_found = 1;
