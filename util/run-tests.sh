@@ -58,6 +58,7 @@ tests=()
 for test_file in t/*.t; do
     if [[ "${TEST_EXPR:-enabled}" == disabled ]]; then
         [[ "$test_file" == *_legacy.t || "$test_file" == t/var_recursion.t \
+            || "$test_file" == t/var_index.t \
             || "$test_file" == t/var_regex.t \
             || "$test_file" == t/var_regex_utf8.t ]] || continue
     else

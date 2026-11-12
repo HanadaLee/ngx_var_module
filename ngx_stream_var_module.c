@@ -30,6 +30,7 @@
 #define NGX_STREAM_VAR_NO_ARGS   0
 #define NGX_STREAM_VAR_MAX_ARGS  (ngx_uint_t) -1
 #define NGX_STREAM_VAR_NO_RULE   (ngx_uint_t) -1
+#define NGX_STREAM_VAR_PAGE_SIZE  64
 
 
 #define ngx_stream_var_isspace(c)                                            \
@@ -138,9 +139,23 @@ typedef ngx_int_t (*ngx_stream_var_func_pt)(ngx_stream_session_t *s,
 
 
 typedef struct {
-    ngx_array_t                   *vars;
-    ngx_stream_var_variable_t    **indexed_vars;
-    ngx_uint_t                     nindexed_vars;
+    ngx_rbtree_node_t  node;
+    ngx_uint_t         offset;
+} ngx_stream_var_index_node_t;
+
+
+typedef struct {
+    ngx_rbtree_t       tree;
+    ngx_rbtree_node_t  sentinel;
+} ngx_stream_var_index_t;
+
+
+typedef struct {
+    ngx_array_t                  *vars;
+    ngx_stream_var_variable_t  ***indexed_vars;
+    ngx_uint_t                    nindexed_vars;
+    ngx_stream_var_index_t       *index;
+    unsigned                      finalized:1;
 } ngx_stream_var_conf_t;
 
 
@@ -257,7 +272,7 @@ static char *ngx_stream_var_merge_conf(ngx_conf_t *cf, void *parent,
     void *child);
 static void ngx_stream_var_finalize_variable(ngx_stream_var_variable_t *var);
 static ngx_int_t ngx_stream_var_finalize_conf(ngx_conf_t *cf,
-    ngx_stream_var_conf_t *conf);
+    ngx_stream_var_conf_t *conf, ngx_stream_var_conf_t *parent);
 
 static char *ngx_stream_var(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
@@ -872,69 +887,16 @@ ngx_stream_var_create_conf(ngx_conf_t *cf)
 static char *
 ngx_stream_var_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 {
-    ngx_stream_var_conf_t      *prev = parent;
-    ngx_stream_var_conf_t      *conf = child;
-    ngx_stream_var_variable_t  *var, *prev_var, *conf_var;
-    ngx_stream_var_rule_t      *rule;
-    ngx_uint_t                  i, j, found;
+    ngx_stream_var_conf_t  *prev = parent;
+    ngx_stream_var_conf_t  *conf = child;
 
-    if (ngx_stream_var_finalize_conf(cf, prev) != NGX_OK) {
+    if (ngx_stream_var_finalize_conf(cf, prev, NULL) != NGX_OK
+        || ngx_stream_var_finalize_conf(cf, conf, prev) != NGX_OK)
+    {
         return NGX_CONF_ERROR;
     }
 
-    if (conf->vars == NULL) {
-        conf->vars = prev->vars;
-        conf->indexed_vars = prev->indexed_vars;
-        conf->nindexed_vars = prev->nindexed_vars;
-        return NGX_CONF_OK;
-    }
-
-    if (prev->vars == NULL) {
-        return ngx_stream_var_finalize_conf(cf, conf) == NGX_OK
-                   ? NGX_CONF_OK : NGX_CONF_ERROR;
-    }
-
-    prev_var = prev->vars->elts;
-    for (i = 0; i < prev->vars->nelts; i++) {
-        found = 0;
-
-        conf_var = conf->vars->elts;
-        for (j = 0; j < conf->vars->nelts; j++) {
-            if (prev_var[i].index == conf_var[j].index) {
-                ngx_stream_var_finalize_variable(&conf_var[j]);
-
-                if (conf_var[j].default_rule != NGX_STREAM_VAR_NO_RULE) {
-                    found = 1;
-                    break;
-                }
-
-                rule = ngx_array_push_n(conf_var[j].rules,
-                                        prev_var[i].rules->nelts);
-                if (rule == NULL) {
-                    return NGX_CONF_ERROR;
-                }
-
-                ngx_memcpy(rule, prev_var[i].rules->elts,
-                           prev_var[i].rules->nelts
-                           * sizeof(ngx_stream_var_rule_t));
-
-                found = 1;
-                break;
-            }
-        }
-
-        if (!found) {
-            var = ngx_array_push(conf->vars);
-            if (var == NULL) {
-                return NGX_CONF_ERROR;
-            }
-
-            *var = prev_var[i];
-        }
-    }
-
-    return ngx_stream_var_finalize_conf(cf, conf) == NGX_OK
-               ? NGX_CONF_OK : NGX_CONF_ERROR;
+    return NGX_CONF_OK;
 }
 
 
@@ -969,37 +931,99 @@ ngx_stream_var_finalize_variable(ngx_stream_var_variable_t *var)
 
 
 static ngx_int_t
-ngx_stream_var_finalize_conf(ngx_conf_t *cf, ngx_stream_var_conf_t *conf)
+ngx_stream_var_finalize_conf(ngx_conf_t *cf, ngx_stream_var_conf_t *conf,
+    ngx_stream_var_conf_t *parent)
 {
+    size_t                        size;
+    ngx_uint_t                    i, n, page, slot, npages, parent_npages;
+    ngx_stream_var_rule_t        *rule;
+    ngx_stream_var_variable_t    *vars, *prev, **inherited;
     ngx_stream_core_main_conf_t  *cmcf;
-    ngx_stream_var_variable_t    *vars;
-    ngx_uint_t                    i, n;
 
-    if (conf->vars == NULL || conf->indexed_vars != NULL) {
+    if (conf->finalized) {
+        return NGX_OK;
+    }
+
+    if (conf->vars == NULL) {
+        if (parent != NULL) {
+            conf->indexed_vars = parent->indexed_vars;
+            conf->nindexed_vars = parent->nindexed_vars;
+        }
+
+        conf->finalized = 1;
         return NGX_OK;
     }
 
     cmcf = ngx_stream_conf_get_module_main_conf(cf, ngx_stream_core_module);
     n = cmcf->variables.nelts;
+    npages = (n + NGX_STREAM_VAR_PAGE_SIZE - 1) / NGX_STREAM_VAR_PAGE_SIZE;
 
-    conf->indexed_vars = ngx_pcalloc(cf->pool,
-                                   n * sizeof(ngx_stream_var_variable_t *));
+    size = npages * sizeof(ngx_stream_var_variable_t **);
+    conf->indexed_vars = ngx_pcalloc(cf->pool, size);
     if (conf->indexed_vars == NULL) {
         return NGX_ERROR;
     }
+
+    parent_npages = 0;
+
+    if (parent != NULL && parent->nindexed_vars != 0) {
+        parent_npages = (parent->nindexed_vars + NGX_STREAM_VAR_PAGE_SIZE - 1)
+                       / NGX_STREAM_VAR_PAGE_SIZE;
+
+        ngx_memcpy(conf->indexed_vars, parent->indexed_vars,
+                   parent_npages * sizeof(ngx_stream_var_variable_t **));
+    }
+
+    size = NGX_STREAM_VAR_PAGE_SIZE * sizeof(ngx_stream_var_variable_t *);
 
     conf->nindexed_vars = n;
     vars = conf->vars->elts;
 
     for (i = 0; i < conf->vars->nelts; i++) {
-        ngx_stream_var_finalize_variable(&vars[i]);
-
         if (vars[i].index < 0 || (ngx_uint_t) vars[i].index >= n) {
             return NGX_ERROR;
         }
 
-        conf->indexed_vars[vars[i].index] = &vars[i];
+        page = vars[i].index / NGX_STREAM_VAR_PAGE_SIZE;
+        slot = vars[i].index % NGX_STREAM_VAR_PAGE_SIZE;
+        inherited = NULL;
+
+        if (page < parent_npages) {
+            inherited = parent->indexed_vars[page];
+        }
+
+        ngx_stream_var_finalize_variable(&vars[i]);
+
+        prev = inherited ? inherited[slot] : NULL;
+
+        if (prev != NULL && vars[i].default_rule == NGX_STREAM_VAR_NO_RULE) {
+            rule = ngx_array_push_n(vars[i].rules, prev->rules->nelts);
+            if (rule == NULL) {
+                return NGX_ERROR;
+            }
+
+            ngx_memcpy(rule, prev->rules->elts,
+                       prev->rules->nelts * sizeof(ngx_stream_var_rule_t));
+
+            ngx_stream_var_finalize_variable(&vars[i]);
+        }
+
+        if (conf->indexed_vars[page] == inherited) {
+            conf->indexed_vars[page] = ngx_pcalloc(cf->pool, size);
+            if (conf->indexed_vars[page] == NULL) {
+                return NGX_ERROR;
+            }
+
+            if (inherited != NULL) {
+                ngx_memcpy(conf->indexed_vars[page], inherited, size);
+            }
+        }
+
+        conf->indexed_vars[page][slot] = &vars[i];
     }
+
+    conf->index = NULL;
+    conf->finalized = 1;
 
     return NGX_OK;
 }
@@ -1185,10 +1209,11 @@ static ngx_stream_var_variable_t *
 ngx_stream_var_add_variable(ngx_conf_t *cf, ngx_stream_var_conf_t *vcf,
     ngx_str_t *name)
 {
-    ngx_stream_variable_t       *v;
-    ngx_stream_var_variable_t   *var;
-    ngx_int_t                    index;
-    ngx_uint_t                   i;
+    ngx_int_t                     index;
+    ngx_rbtree_node_t            *node, *sentinel;
+    ngx_stream_variable_t        *v;
+    ngx_stream_var_variable_t    *var;
+    ngx_stream_var_index_node_t  *entry;
 
     v = ngx_stream_add_variable(cf, name,
                                 NGX_STREAM_VAR_CHANGEABLE
@@ -1204,26 +1229,44 @@ ngx_stream_var_add_variable(ngx_conf_t *cf, ngx_stream_var_conf_t *vcf,
         return NULL;
     }
 
-    index = ngx_stream_get_variable_index(cf, name);
-    if (index == NGX_ERROR) {
-        return NULL;
-    }
+    if (v->get_handler == ngx_stream_var_variable_handler) {
+        index = (ngx_int_t) v->data;
 
-    if (vcf->vars == NULL) {
-        vcf->vars = ngx_array_create(cf->pool, 4,
-                                     sizeof(ngx_stream_var_variable_t));
-        if (vcf->vars == NULL) {
+    } else {
+        index = ngx_stream_get_variable_index(cf, name);
+        if (index == NGX_ERROR) {
             return NULL;
         }
     }
 
-    var = vcf->vars->elts;
-
-    for (i = 0; i < vcf->vars->nelts; i++) {
-        if (var[i].index == index) {
-            var = &var[i];
-            goto found;
+    if (vcf->vars == NULL) {
+        vcf->vars = ngx_array_create(cf->pool, 1,
+                                     sizeof(ngx_stream_var_variable_t));
+        if (vcf->vars == NULL) {
+            return NULL;
         }
+
+        vcf->index = ngx_palloc(cf->temp_pool, sizeof(ngx_stream_var_index_t));
+        if (vcf->index == NULL) {
+            return NULL;
+        }
+
+        ngx_rbtree_init(&vcf->index->tree, &vcf->index->sentinel,
+                        ngx_rbtree_insert_value);
+    }
+
+    node = vcf->index->tree.root;
+    sentinel = vcf->index->tree.sentinel;
+
+    while (node != sentinel) {
+        if ((ngx_rbtree_key_t) index == node->key) {
+            entry = (ngx_stream_var_index_node_t *) node;
+            var = vcf->vars->elts;
+            return &var[entry->offset];
+        }
+
+        node = ((ngx_rbtree_key_t) index < node->key)
+               ? node->left : node->right;
     }
 
     var = ngx_array_push(vcf->vars);
@@ -1235,13 +1278,19 @@ ngx_stream_var_add_variable(ngx_conf_t *cf, ngx_stream_var_conf_t *vcf,
     var->index = index;
     var->conditional_nrules = 0;
     var->default_rule = NGX_STREAM_VAR_NO_RULE;
-    var->rules = ngx_array_create(cf->pool, 4,
-                                  sizeof(ngx_stream_var_rule_t));
+    var->rules = ngx_array_create(cf->pool, 1, sizeof(ngx_stream_var_rule_t));
     if (var->rules == NULL) {
         return NULL;
     }
 
-found:
+    entry = ngx_palloc(cf->temp_pool, sizeof(ngx_stream_var_index_node_t));
+    if (entry == NULL) {
+        return NULL;
+    }
+
+    entry->node.key = index;
+    entry->offset = vcf->vars->nelts - 1;
+    ngx_rbtree_insert(&vcf->index->tree, &entry->node);
 
     v->data = (uintptr_t) index;
     v->get_handler = ngx_stream_var_variable_handler;
@@ -1348,7 +1397,7 @@ ngx_stream_var_compile_regex(ngx_conf_t *cf,
 
 #if (NGX_PCRE2)
     if (pcre2_pattern_info(rule->regex->regex, PCRE2_INFO_ALLOPTIONS,
-                          &options) != 0)
+                           &options) != 0)
     {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "pcre2_pattern_info() failed");
@@ -1357,7 +1406,8 @@ ngx_stream_var_compile_regex(ngx_conf_t *cf,
 
     rule->utf8 = (options & PCRE2_UTF) != 0;
 #else
-    if (pcre_fullinfo(rule->regex->regex->code, rule->regex->regex->extra,
+    if (pcre_fullinfo(rule->regex->regex->code,
+                      rule->regex->regex->extra,
                       PCRE_INFO_OPTIONS, &options) != 0)
     {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "pcre_fullinfo() failed");
@@ -1524,7 +1574,7 @@ ngx_stream_var_variable_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, uintptr_t data)
 {
     ngx_stream_var_conf_t      *vcf;
-    ngx_stream_var_variable_t  *var;
+    ngx_stream_var_variable_t  *var, **vars;
     ngx_stream_var_rule_t      *rule;
     ngx_stream_var_ctx_t       *ctx;
     ngx_stream_var_eval_t       eval, *p;
@@ -1543,7 +1593,8 @@ ngx_stream_var_variable_handler(ngx_stream_session_t *s,
         return NGX_OK;
     }
 
-    var = vcf->indexed_vars[index];
+    vars = vcf->indexed_vars[index / NGX_STREAM_VAR_PAGE_SIZE];
+    var = vars ? vars[index % NGX_STREAM_VAR_PAGE_SIZE] : NULL;
 
     if (var == NULL) {
         v->not_found = 1;
@@ -4247,7 +4298,7 @@ ngx_stream_var_regex_gsub_handler(ngx_stream_session_t *s,
 
     for ( ;; ) {
         rc = ngx_stream_var_helper_regex_exec(s, rule->regex, &val,
-                                               search_offset, &ctx);
+                                              search_offset, &ctx);
 
         if (rc == NGX_DECLINED) {
             break;
@@ -4278,7 +4329,7 @@ ngx_stream_var_regex_gsub_handler(ngx_stream_session_t *s,
                                            start - copy_offset, &total)
             != NGX_OK
             || ngx_stream_var_helper_add_part(&parts, replacement.data,
-                                               replacement.len, &total)
+                                              replacement.len, &total)
                != NGX_OK)
         {
             goto failed;
