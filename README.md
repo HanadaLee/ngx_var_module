@@ -214,6 +214,14 @@ var $new_var substr src_str start [len];
 # Replace keyword
 var $new_var replace [-i] src_str src dst;
 
+# Translate bytes by position. The two character sets must have equal lengths.
+# Variables are supported in all three arguments. Repeated source bytes use
+# their last mapping; ranges, character classes, and -i are not supported.
+var $new_var tr src_str from to;
+
+# Convert CloudFront signature encoding to standard Base64
+var $signature_base64 tr $arg_signature "-_~" "+=/";
+
 # Extract parameters
 # Extract a value from a list of parameters. A use case for this is to extract query parameters without having to write a regular expression, but it can be used to look up values in any name/value pair list. If several occurrences of the parameter exist, only the first one is returned. the variable gets a blank value. The separator and delimiter must be explicitly specified as single characters.
 var $new_var extract_param [-i] src_string separator delimiter param_name;

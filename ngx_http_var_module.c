@@ -52,6 +52,7 @@ typedef enum {
     NGX_HTTP_VAR_FUNC_REPEAT,
     NGX_HTTP_VAR_FUNC_SUBSTR,
     NGX_HTTP_VAR_FUNC_REPLACE,
+    NGX_HTTP_VAR_FUNC_TR,
     NGX_HTTP_VAR_FUNC_EXTRACT_PARAM,
     NGX_HTTP_VAR_FUNC_KEEP_PARAMS,
     NGX_HTTP_VAR_FUNC_REMOVE_PARAMS,
@@ -358,6 +359,8 @@ static ngx_int_t ngx_http_var_substr_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_replace_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
+static ngx_int_t ngx_http_var_tr_handler(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_extract_param_handler(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule);
 static ngx_int_t ngx_http_var_params_handler(ngx_http_request_t *r,
@@ -532,6 +535,11 @@ static ngx_http_var_func_t  ngx_http_var_funcs[] = {
     { ngx_string("replace"),
       ngx_http_var_replace_handler,
       NGX_HTTP_VAR_FUNC_REPLACE,
+      3, 3 },
+
+    { ngx_string("tr"),
+      ngx_http_var_tr_handler,
+      NGX_HTTP_VAR_FUNC_TR,
       3, 3 },
 
     { ngx_string("extract_param"),
@@ -1218,6 +1226,23 @@ ngx_http_var_parser(ngx_conf_t *cf, ngx_http_var_func_t *func,
     }
 
 #endif
+
+    if (func->type == NGX_HTTP_VAR_FUNC_TR) {
+        if (rule->ignore_case) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "var tr does not support \"-i\"");
+            return NGX_ERROR;
+        }
+
+        if (ngx_http_script_variables_count(&value[first + 1]) == 0
+            && ngx_http_script_variables_count(&value[first + 2]) == 0
+            && value[first + 1].len != value[first + 2].len)
+        {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "var tr character sets must have equal lengths");
+            return NGX_ERROR;
+        }
+    }
 
     return ngx_http_var_compile_args(cf, rule, &value[first], nargs);
 }
@@ -2696,6 +2721,61 @@ ngx_http_var_replace_handler(ngx_http_request_t *r,
     }
 
     v->len = q - p;
+    v->data = p;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_var_tr_handler(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, ngx_http_var_rule_t *rule)
+{
+    u_char                       *p;
+    size_t                        i;
+    ngx_str_t                     value, from, to;
+    ngx_http_complex_value_t     *args;
+    u_char                        table[256];
+
+    args = rule->args->elts;
+
+    if (ngx_http_complex_value(r, &args[0], &value) != NGX_OK
+        || ngx_http_complex_value(r, &args[1], &from) != NGX_OK
+        || ngx_http_complex_value(r, &args[2], &to) != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    if (from.len != to.len) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "var tr character sets must have equal lengths");
+        return NGX_ERROR;
+    }
+
+    if (value.len == 0 || from.len == 0) {
+        v->len = value.len;
+        v->data = value.data;
+        return NGX_OK;
+    }
+
+    for (i = 0; i < sizeof(table); i++) {
+        table[i] = (u_char) i;
+    }
+
+    for (i = 0; i < from.len; i++) {
+        table[from.data[i]] = to.data[i];
+    }
+
+    p = ngx_pnalloc(r->pool, value.len);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    for (i = 0; i < value.len; i++) {
+        p[i] = table[value.data[i]];
+    }
+
+    v->len = value.len;
     v->data = p;
 
     return NGX_OK;
