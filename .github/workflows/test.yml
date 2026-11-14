@@ -65,6 +65,7 @@ jobs:
             libssl-dev \
             zlib1g-dev \
             perl \
+            python3-cryptography \
             pkg-config
 
       - name: Build and test

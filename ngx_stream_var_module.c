@@ -17,6 +17,11 @@
 #if (NGX_OPENSSL)
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
+#include <openssl/rand.h>
+#include <openssl/err.h>
+#include <openssl/crypto.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
 #endif
 
 #if (nginx_version >= 1031005)
@@ -31,6 +36,29 @@
 #define NGX_STREAM_VAR_MAX_ARGS  (ngx_uint_t) -1
 #define NGX_STREAM_VAR_NO_RULE   (ngx_uint_t) -1
 #define NGX_STREAM_VAR_PAGE_SIZE  64
+
+#if (NGX_OPENSSL)
+#define NGX_STREAM_VAR_CIPHER_DATA      0
+#define NGX_STREAM_VAR_CIPHER_KEY       1
+#define NGX_STREAM_VAR_CIPHER_NAME      2
+#define NGX_STREAM_VAR_CIPHER_IV        3
+#define NGX_STREAM_VAR_CIPHER_AAD       4
+#define NGX_STREAM_VAR_CIPHER_PADDING   5
+#define NGX_STREAM_VAR_CIPHER_FORMAT    6
+#define NGX_STREAM_VAR_CIPHER_ARGS      7
+#define NGX_STREAM_VAR_CRYPTO_ARGS      10
+
+#define NGX_STREAM_VAR_RSA_DATA         0
+#define NGX_STREAM_VAR_RSA_KEY          1
+#define NGX_STREAM_VAR_RSA_SIGNATURE    2
+#define NGX_STREAM_VAR_RSA_PADDING      3
+#define NGX_STREAM_VAR_RSA_HASH         4
+#define NGX_STREAM_VAR_RSA_MGF1_HASH    5
+#define NGX_STREAM_VAR_RSA_LABEL        6
+#define NGX_STREAM_VAR_RSA_SALT_LENGTH  7
+#define NGX_STREAM_VAR_RSA_PASSWORD     8
+#define NGX_STREAM_VAR_RSA_ARGS         9
+#endif
 
 
 #define ngx_stream_var_isspace(c)                                            \
@@ -119,6 +147,16 @@ typedef enum {
     NGX_STREAM_VAR_FUNC_HMAC_SHA256,
     NGX_STREAM_VAR_FUNC_HMAC_SHA384,
     NGX_STREAM_VAR_FUNC_HMAC_SHA512,
+
+    NGX_STREAM_VAR_FUNC_AES_ENCRYPT,
+    NGX_STREAM_VAR_FUNC_AES_DECRYPT,
+    NGX_STREAM_VAR_FUNC_CHACHA20_ENCRYPT,
+    NGX_STREAM_VAR_FUNC_CHACHA20_DECRYPT,
+
+    NGX_STREAM_VAR_FUNC_RSA_ENCRYPT,
+    NGX_STREAM_VAR_FUNC_RSA_DECRYPT,
+    NGX_STREAM_VAR_FUNC_RSA_SIGN,
+    NGX_STREAM_VAR_FUNC_RSA_VERIFY,
 #endif
 
     NGX_STREAM_VAR_FUNC_GMT_TIME,
@@ -134,6 +172,11 @@ typedef struct ngx_stream_var_rule_s  ngx_stream_var_rule_t;
 typedef struct ngx_stream_var_func_s  ngx_stream_var_func_t;
 typedef struct ngx_stream_var_variable_s  ngx_stream_var_variable_t;
 typedef struct ngx_stream_var_eval_s  ngx_stream_var_eval_t;
+
+#if (NGX_OPENSSL)
+typedef struct ngx_stream_var_crypto_ctx_s  ngx_stream_var_crypto_ctx_t;
+typedef struct ngx_stream_var_rsa_conf_s  ngx_stream_var_rsa_conf_t;
+#endif
 
 #if (nginx_version >= 1031005)
 typedef struct ngx_stream_var_json_node_s  ngx_stream_var_json_node_t;
@@ -176,7 +219,7 @@ struct ngx_stream_var_rule_s {
     ngx_uint_t                     negative;    /* negative filter */
 #endif
 
-#if (NGX_PCRE || nginx_version >= 1031005)
+#if (NGX_PCRE || NGX_OPENSSL || nginx_version >= 1031005)
     union {
 #if (NGX_PCRE)
         struct {
@@ -190,6 +233,11 @@ struct ngx_stream_var_rule_s {
             ngx_stream_var_json_node_t  *root;
             ngx_uint_t                   invalid;
         } json;
+#endif
+
+#if (NGX_OPENSSL)
+        ngx_uint_t                  cipher_flags;
+        ngx_stream_var_rsa_conf_t  *rsa;
 #endif
     } u;
 #endif
@@ -220,6 +268,9 @@ struct ngx_stream_var_eval_s {
 typedef struct {
     ngx_stream_var_eval_t         *evaluating;
     ngx_array_t                   *random_values;
+#if (NGX_OPENSSL)
+    ngx_stream_var_crypto_ctx_t     *crypto_values;
+#endif
 } ngx_stream_var_ctx_t;
 
 
@@ -270,6 +321,61 @@ typedef struct {
     pcre2_match_data              *match_data;
 #endif
 } ngx_stream_var_regex_exec_t;
+
+#endif
+
+
+#if (NGX_OPENSSL)
+
+struct ngx_stream_var_rsa_conf_s {
+    ngx_uint_t                     flags;
+    EVP_PKEY                      *key;
+    ngx_str_t                      prefix;
+};
+
+
+typedef struct {
+    int                            padding;
+    int                            salt_length;
+    const                          EVP_MD                  *md;
+    const                          EVP_MD                  *mgf1_md;
+    ngx_uint_t                     signing;
+    ngx_uint_t                     private_key;
+    ngx_uint_t                     cache;
+    ngx_uint_t                     verify;
+} ngx_stream_var_rsa_options_t;
+
+
+struct ngx_stream_var_crypto_ctx_s {
+    ngx_rbtree_t                   tree;
+    ngx_rbtree_node_t              sentinel;
+};
+
+
+typedef struct {
+    ngx_str_t                      name;
+    ngx_uint_t                     key_len;
+    ngx_uint_t                     iv_len;
+    ngx_uint_t                     tag_len;
+    ngx_uint_t                     padding;
+} ngx_stream_var_cipher_t;
+
+
+typedef struct {
+    ngx_stream_var_cipher_t       *cipher;
+    ngx_uint_t                     encrypt;
+    ngx_uint_t                     packed;
+    ngx_uint_t                     padding;
+} ngx_stream_var_cipher_options_t;
+
+
+typedef struct {
+    ngx_rbtree_node_t              node;
+    ngx_stream_var_rule_t         *rule;
+    ngx_uint_t                     nargs;
+    ngx_str_t                      args[NGX_STREAM_VAR_CRYPTO_ARGS];
+    ngx_str_t                      value;
+} ngx_stream_var_crypto_value_t;
 
 #endif
 
@@ -464,6 +570,18 @@ static ngx_int_t ngx_stream_var_unix_time_handler(ngx_stream_session_t *s,
 
 static ngx_int_t ngx_stream_var_cidr_handler(ngx_stream_session_t *s,
     ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+
+
+#if (NGX_OPENSSL)
+static ngx_int_t ngx_stream_var_compile_rsa(ngx_conf_t *cf,
+    ngx_stream_var_rule_t *rule, ngx_str_t *value, ngx_uint_t nargs);
+static ngx_int_t ngx_stream_var_rsa_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+static ngx_int_t ngx_stream_var_compile_cipher(ngx_conf_t *cf,
+    ngx_stream_var_rule_t *rule, ngx_str_t *value, ngx_uint_t nargs);
+static ngx_int_t ngx_stream_var_cipher_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule);
+#endif
 
 
 static ngx_stream_var_func_t  ngx_stream_var_funcs[] = {
@@ -816,6 +934,46 @@ static ngx_stream_var_func_t  ngx_stream_var_funcs[] = {
       ngx_stream_var_hmac_handler,
       NGX_STREAM_VAR_FUNC_HMAC_SHA512,
       2, 2 },
+
+    { ngx_string("aes_encrypt"),
+      ngx_stream_var_cipher_handler,
+      NGX_STREAM_VAR_FUNC_AES_ENCRYPT,
+      2, 7 },
+
+    { ngx_string("aes_decrypt"),
+      ngx_stream_var_cipher_handler,
+      NGX_STREAM_VAR_FUNC_AES_DECRYPT,
+      2, 7 },
+
+    { ngx_string("chacha20_encrypt"),
+      ngx_stream_var_cipher_handler,
+      NGX_STREAM_VAR_FUNC_CHACHA20_ENCRYPT,
+      2, 5 },
+
+    { ngx_string("chacha20_decrypt"),
+      ngx_stream_var_cipher_handler,
+      NGX_STREAM_VAR_FUNC_CHACHA20_DECRYPT,
+      2, 5 },
+
+    { ngx_string("rsa_encrypt"),
+      ngx_stream_var_rsa_handler,
+      NGX_STREAM_VAR_FUNC_RSA_ENCRYPT,
+      2, 7 },
+
+    { ngx_string("rsa_decrypt"),
+      ngx_stream_var_rsa_handler,
+      NGX_STREAM_VAR_FUNC_RSA_DECRYPT,
+      2, 7 },
+
+    { ngx_string("rsa_sign"),
+      ngx_stream_var_rsa_handler,
+      NGX_STREAM_VAR_FUNC_RSA_SIGN,
+      2, 7 },
+
+    { ngx_string("rsa_verify"),
+      ngx_stream_var_rsa_handler,
+      NGX_STREAM_VAR_FUNC_RSA_VERIFY,
+      3, 7 },
 #endif
 
     { ngx_string("gmt_time"),
@@ -843,6 +1001,80 @@ static ngx_stream_var_func_t  ngx_stream_var_funcs[] = {
       NGX_STREAM_VAR_FUNC_UNKNOWN,
       NGX_STREAM_VAR_NO_ARGS, NGX_STREAM_VAR_NO_ARGS }
 };
+
+
+#if (NGX_OPENSSL)
+
+static ngx_stream_var_cipher_t  ngx_stream_var_aes_ciphers[] = {
+
+    { ngx_string("aes-128-gcm"),
+      16, 12, 16, 0 },
+    { ngx_string("aes-128-cbc"),
+      16, 16, 0, 1 },
+    { ngx_string("aes-128-ctr"),
+      16, 16, 0, 0 },
+    { ngx_string("aes-128-cfb"),
+      16, 16, 0, 0 },
+    { ngx_string("aes-128-ofb"),
+      16, 16, 0, 0 },
+    { ngx_string("aes-128-ecb"),
+      16, 0, 0, 1 },
+    { ngx_string("aes-192-gcm"),
+      24, 12, 16, 0 },
+    { ngx_string("aes-192-cbc"),
+      24, 16, 0, 1 },
+    { ngx_string("aes-192-ctr"),
+      24, 16, 0, 0 },
+    { ngx_string("aes-192-cfb"),
+      24, 16, 0, 0 },
+    { ngx_string("aes-192-ofb"),
+      24, 16, 0, 0 },
+    { ngx_string("aes-192-ecb"),
+      24, 0, 0, 1 },
+    { ngx_string("aes-256-gcm"),
+      32, 12, 16, 0 },
+    { ngx_string("aes-256-cbc"),
+      32, 16, 0, 1 },
+    { ngx_string("aes-256-ctr"),
+      32, 16, 0, 0 },
+    { ngx_string("aes-256-cfb"),
+      32, 16, 0, 0 },
+    { ngx_string("aes-256-ofb"),
+      32, 16, 0, 0 },
+    { ngx_string("aes-256-ecb"),
+      32, 0, 0, 1 },
+    { ngx_null_string, 0, 0, 0, 0 }
+};
+
+
+static ngx_stream_var_cipher_t  ngx_stream_var_chacha20_cipher = {
+    ngx_string("chacha20-poly1305"), 32, 12, 16, 0
+};
+
+
+static ngx_str_t  ngx_stream_var_cipher_parameters[] = {
+    ngx_null_string,
+    ngx_null_string,
+    ngx_string("cipher="),
+    ngx_string("iv="),
+    ngx_string("aad="),
+    ngx_string("padding="),
+    ngx_string("format="),
+};
+
+static ngx_str_t  ngx_stream_var_rsa_parameters[] = {
+    ngx_null_string,
+    ngx_null_string,
+    ngx_null_string,
+    ngx_string("padding="),
+    ngx_string("hash="),
+    ngx_string("mgf1_hash="),
+    ngx_string("label="),
+    ngx_string("salt_length="),
+    ngx_string("password="),
+};
+
+#endif
 
 
 static ngx_command_t  ngx_stream_var_commands[] = {
@@ -1240,6 +1472,24 @@ ngx_stream_var_parser(ngx_conf_t *cf, ngx_stream_var_func_t *func,
             return NGX_ERROR;
         }
     }
+
+#if (NGX_OPENSSL)
+    if (func->type == NGX_STREAM_VAR_FUNC_RSA_ENCRYPT
+        || func->type == NGX_STREAM_VAR_FUNC_RSA_DECRYPT
+        || func->type == NGX_STREAM_VAR_FUNC_RSA_SIGN
+        || func->type == NGX_STREAM_VAR_FUNC_RSA_VERIFY)
+    {
+        return ngx_stream_var_compile_rsa(cf, rule, &value[first], nargs);
+    }
+
+    if (func->type == NGX_STREAM_VAR_FUNC_AES_ENCRYPT
+        || func->type == NGX_STREAM_VAR_FUNC_AES_DECRYPT
+        || func->type == NGX_STREAM_VAR_FUNC_CHACHA20_ENCRYPT
+        || func->type == NGX_STREAM_VAR_FUNC_CHACHA20_DECRYPT)
+    {
+        return ngx_stream_var_compile_cipher(cf, rule, &value[first], nargs);
+    }
+#endif
 
     return ngx_stream_var_compile_args(cf, rule, &value[first], nargs);
 }
@@ -1722,10 +1972,9 @@ ngx_stream_var_variable_handler(ngx_stream_session_t *s,
     v->no_cacheable = 0;
     v->not_found = 0;
 
-    ngx_log_debug4(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
-                   "var: evaluated variable \"%V\", "
-                   "length: %uz, value: \"%*s\"",
-                   &var->name, v->len, v->len, v->data);
+    ngx_log_debug2(NGX_LOG_DEBUG_STREAM, s->connection->log, 0,
+                   "var: evaluated variable \"%V\", length: %uz",
+                   &var->name, v->len);
 
     return NGX_OK;
 }
@@ -6537,3 +6786,1333 @@ ngx_stream_var_cidr_handler(ngx_stream_session_t *s,
 
     return NGX_OK;
 }
+
+
+#if (NGX_OPENSSL)
+
+static ngx_int_t
+ngx_stream_var_crypto_equal(ngx_str_t *value, const char *text)
+{
+    size_t  len;
+
+    len = ngx_strlen(text);
+
+    if (value->len == len && ngx_strncmp(value->data, text, len) == 0) {
+        return NGX_OK;
+    }
+
+    return NGX_DECLINED;
+}
+
+
+static ngx_int_t
+ngx_stream_var_cipher_options(ngx_str_t *values, ngx_uint_t flags,
+    ngx_uint_t known, ngx_stream_var_func_e type,
+    ngx_stream_var_cipher_options_t *options, char **err)
+{
+    size_t                    key_len;
+    ngx_str_t                 default_name, *name;
+    ngx_uint_t                chacha;
+    ngx_stream_var_cipher_t  *cipher;
+
+    ngx_memzero(options, sizeof(ngx_stream_var_cipher_options_t));
+    *err = "invalid cipher parameters";
+
+    options->encrypt = (type == NGX_STREAM_VAR_FUNC_AES_ENCRYPT
+                        || type == NGX_STREAM_VAR_FUNC_CHACHA20_ENCRYPT);
+    chacha = (type == NGX_STREAM_VAR_FUNC_CHACHA20_ENCRYPT
+              || type == NGX_STREAM_VAR_FUNC_CHACHA20_DECRYPT);
+    key_len = 0;
+
+    if (known & (1 << NGX_STREAM_VAR_CIPHER_KEY)) {
+        key_len = values[NGX_STREAM_VAR_CIPHER_KEY].len;
+
+        if ((chacha && key_len != 32)
+            || (!chacha && key_len != 16 && key_len != 24 && key_len != 32))
+        {
+            *err = "invalid cipher key length";
+            return NGX_ERROR;
+        }
+    }
+
+    cipher = NULL;
+
+    if (chacha) {
+        if (flags & (1 << NGX_STREAM_VAR_CIPHER_NAME)) {
+            *err = "cipher is only supported by AES functions";
+            return NGX_ERROR;
+        }
+
+        cipher = &ngx_stream_var_chacha20_cipher;
+
+    } else if (known & (1 << NGX_STREAM_VAR_CIPHER_NAME)) {
+        name = &values[NGX_STREAM_VAR_CIPHER_NAME];
+
+        if (!(flags & (1 << NGX_STREAM_VAR_CIPHER_NAME))) {
+            if (key_len == 24) {
+                ngx_str_set(&default_name, "aes-192-gcm");
+
+            } else if (key_len == 32) {
+                ngx_str_set(&default_name, "aes-256-gcm");
+
+            } else {
+                ngx_str_set(&default_name, "aes-128-gcm");
+            }
+
+            name = &default_name;
+        }
+
+        for (cipher = ngx_stream_var_aes_ciphers; cipher->name.len; cipher++) {
+            if (name->len == cipher->name.len
+                && ngx_strncasecmp(name->data, cipher->name.data, name->len)
+                   == 0)
+            {
+                break;
+            }
+        }
+
+        if (cipher->name.len == 0) {
+            *err = "unsupported AES cipher";
+            return NGX_ERROR;
+        }
+    }
+
+    if (cipher) {
+        if (key_len && key_len != cipher->key_len) {
+            *err = "invalid cipher key length";
+            return NGX_ERROR;
+        }
+
+        options->cipher = cipher;
+        options->padding = cipher->padding;
+
+        if ((flags & (1 << NGX_STREAM_VAR_CIPHER_AAD)) && !cipher->tag_len) {
+            *err = "aad is only supported by authenticated ciphers";
+            return NGX_ERROR;
+        }
+
+        if ((flags & (1 << NGX_STREAM_VAR_CIPHER_PADDING))
+            && !cipher->padding)
+        {
+            *err = "padding is only supported by CBC and ECB ciphers";
+            return NGX_ERROR;
+        }
+
+        if (flags & (1 << NGX_STREAM_VAR_CIPHER_IV)) {
+            if (cipher->iv_len == 0
+                || ((known & (1 << NGX_STREAM_VAR_CIPHER_IV))
+                    && values[NGX_STREAM_VAR_CIPHER_IV].len != cipher->iv_len))
+            {
+                *err = "invalid cipher IV length";
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    if ((known & (1 << NGX_STREAM_VAR_CIPHER_PADDING))
+        && (flags & (1 << NGX_STREAM_VAR_CIPHER_PADDING)))
+    {
+        name = &values[NGX_STREAM_VAR_CIPHER_PADDING];
+
+        if (ngx_stream_var_crypto_equal(name, "pkcs7") == NGX_OK) {
+            options->padding = 1;
+
+        } else if (ngx_stream_var_crypto_equal(name, "none") == NGX_OK) {
+            options->padding = 0;
+
+        } else {
+            *err = "invalid cipher padding";
+            return NGX_ERROR;
+        }
+    }
+
+    if (known & (1 << NGX_STREAM_VAR_CIPHER_FORMAT)) {
+        name = &values[NGX_STREAM_VAR_CIPHER_FORMAT];
+
+        if (ngx_stream_var_crypto_equal(name, "packed") == NGX_OK) {
+            options->packed = 1;
+
+            if (!options->encrypt
+                && (flags & (1 << NGX_STREAM_VAR_CIPHER_IV)))
+            {
+                *err = "iv cannot be used with packed decryption";
+                return NGX_ERROR;
+            }
+
+        } else if (ngx_stream_var_crypto_equal(name, "raw") == NGX_OK) {
+            if (options->cipher && options->cipher->iv_len
+                && !(flags & (1 << NGX_STREAM_VAR_CIPHER_IV)))
+            {
+                *err = "raw format requires an explicit IV";
+                return NGX_ERROR;
+            }
+
+        } else {
+            *err = "invalid cipher format";
+            return NGX_ERROR;
+        }
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_stream_var_compile_cipher(ngx_conf_t *cf, ngx_stream_var_rule_t *rule,
+    ngx_str_t *value, ngx_uint_t nargs)
+{
+    char                            *err;
+    ngx_str_t                       *parameter;
+    ngx_uint_t                       i, j, known, flags;
+    ngx_stream_complex_value_t      *cv;
+    ngx_stream_var_cipher_options_t  options;
+    ngx_str_t                        values[NGX_STREAM_VAR_CIPHER_ARGS];
+
+    if (rule->ignore_case) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "var cipher functions do not support \"-i\"");
+        return NGX_ERROR;
+    }
+
+    values[NGX_STREAM_VAR_CIPHER_DATA] = value[0];
+    values[NGX_STREAM_VAR_CIPHER_KEY] = value[1];
+
+    ngx_str_null(&values[NGX_STREAM_VAR_CIPHER_NAME]);
+    ngx_str_null(&values[NGX_STREAM_VAR_CIPHER_IV]);
+    ngx_str_null(&values[NGX_STREAM_VAR_CIPHER_AAD]);
+    ngx_str_null(&values[NGX_STREAM_VAR_CIPHER_PADDING]);
+    ngx_str_set(&values[NGX_STREAM_VAR_CIPHER_FORMAT], "packed");
+
+    flags = 0;
+
+    for (i = 2; i < nargs; i++) {
+        for (j = NGX_STREAM_VAR_CIPHER_NAME;
+             j < NGX_STREAM_VAR_CIPHER_ARGS;
+             j++)
+        {
+            parameter = &ngx_stream_var_cipher_parameters[j];
+
+            if (value[i].len >= parameter->len
+                && ngx_strncmp(value[i].data, parameter->data,
+                               parameter->len) == 0)
+            {
+                break;
+            }
+        }
+
+        if (j == NGX_STREAM_VAR_CIPHER_ARGS) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "var: invalid cipher parameter");
+            return NGX_ERROR;
+        }
+
+        if (flags & (1 << j)) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "var: duplicate cipher parameter \"%V\"",
+                               &ngx_stream_var_cipher_parameters[j]);
+            return NGX_ERROR;
+        }
+
+        flags |= 1 << j;
+        values[j].data = value[i].data + parameter->len;
+        values[j].len = value[i].len - parameter->len;
+    }
+
+    if (ngx_stream_var_compile_args(cf, rule, values,
+                                    NGX_STREAM_VAR_CIPHER_ARGS)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    rule->u.cipher_flags = flags;
+    cv = rule->args->elts;
+    known = 0;
+
+    for (i = 0; i < NGX_STREAM_VAR_CIPHER_ARGS; i++) {
+        if (cv[i].lengths == NULL) {
+            known |= 1 << i;
+            values[i] = cv[i].value;
+        }
+    }
+
+    if (ngx_stream_var_cipher_options(values, flags, known, rule->func->type,
+                                      &options, &err) != NGX_OK)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "var: %s", err);
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_stream_var_crypto_compare(ngx_stream_var_crypto_value_t *a,
+    ngx_stream_var_crypto_value_t *b)
+{
+    size_t      len;
+    ngx_int_t   rc;
+    ngx_uint_t  i;
+
+    if (a->rule != b->rule) {
+        return (uintptr_t) a->rule < (uintptr_t) b->rule ? -1 : 1;
+    }
+
+    if (a->nargs != b->nargs) {
+        return a->nargs < b->nargs ? -1 : 1;
+    }
+
+    for (i = 0; i < a->nargs; i++) {
+        len = ngx_min(a->args[i].len, b->args[i].len);
+
+        if (len) {
+            rc = ngx_memcmp(a->args[i].data, b->args[i].data, len);
+            if (rc) {
+                return rc;
+            }
+        }
+
+        if (a->args[i].len != b->args[i].len) {
+            return a->args[i].len < b->args[i].len ? -1 : 1;
+        }
+    }
+
+    return 0;
+}
+
+
+static void
+ngx_stream_var_crypto_insert(ngx_rbtree_node_t *temp, ngx_rbtree_node_t *node,
+    ngx_rbtree_node_t *sentinel)
+{
+    ngx_int_t            rc;
+    ngx_rbtree_node_t  **p;
+
+    for ( ;; ) {
+        if (node->key < temp->key) {
+            p = &temp->left;
+
+        } else if (node->key > temp->key) {
+            p = &temp->right;
+
+        } else {
+            rc = ngx_stream_var_crypto_compare(
+                     (ngx_stream_var_crypto_value_t *) node,
+                     (ngx_stream_var_crypto_value_t *) temp);
+            p = (rc < 0) ? &temp->left : &temp->right;
+        }
+
+        if (*p == sentinel) {
+            break;
+        }
+
+        temp = *p;
+    }
+
+    *p = node;
+    node->parent = temp;
+    node->left = sentinel;
+    node->right = sentinel;
+    ngx_rbt_red(node);
+}
+
+
+static ngx_stream_var_crypto_value_t *
+ngx_stream_var_crypto_lookup(ngx_stream_var_crypto_ctx_t *index,
+    ngx_stream_var_crypto_value_t *value)
+{
+    ngx_int_t                       rc;
+    ngx_rbtree_node_t              *node, *sentinel;
+    ngx_stream_var_crypto_value_t  *entry;
+
+    node = index->tree.root;
+    sentinel = index->tree.sentinel;
+
+    while (node != sentinel) {
+        if (value->node.key < node->key) {
+            node = node->left;
+
+        } else if (value->node.key > node->key) {
+            node = node->right;
+
+        } else {
+            entry = (ngx_stream_var_crypto_value_t *) node;
+            rc = ngx_stream_var_crypto_compare(value, entry);
+            if (rc == 0) {
+                return entry;
+            }
+
+            node = rc < 0 ? node->left : node->right;
+        }
+    }
+
+    return NULL;
+}
+
+
+static void
+ngx_stream_var_crypto_cleanup(void *data)
+{
+    ngx_stream_var_crypto_ctx_t  *cache = data;
+
+    ngx_uint_t                      i;
+    ngx_rbtree_node_t              *node, *sentinel;
+    ngx_stream_var_crypto_value_t  *entry;
+
+    sentinel = cache->tree.sentinel;
+
+    while (cache->tree.root != sentinel) {
+        node = ngx_rbtree_min(cache->tree.root, sentinel);
+        entry = (ngx_stream_var_crypto_value_t *) node;
+        ngx_rbtree_delete(&cache->tree, node);
+
+        for (i = 0; i < entry->nargs; i++) {
+            if (entry->args[i].len) {
+                OPENSSL_cleanse(entry->args[i].data, entry->args[i].len);
+            }
+        }
+    }
+}
+
+
+static ngx_stream_var_crypto_ctx_t *
+ngx_stream_var_crypto_get_cache(ngx_stream_session_t *s)
+{
+    ngx_stream_var_ctx_t         *ctx;
+    ngx_pool_cleanup_t           *cln;
+    ngx_stream_var_crypto_ctx_t  *cache;
+
+    ctx = ngx_stream_var_get_ctx(s);
+    if (ctx == NULL) {
+        return NULL;
+    }
+
+    if (ctx->crypto_values == NULL) {
+        cln = ngx_pool_cleanup_add(s->connection->pool,
+                                   sizeof(ngx_stream_var_crypto_ctx_t));
+        if (cln == NULL) {
+            return NULL;
+        }
+
+        cln->handler = ngx_stream_var_crypto_cleanup;
+        cache = cln->data;
+        ngx_rbtree_init(&cache->tree, &cache->sentinel,
+                       ngx_stream_var_crypto_insert);
+        ctx->crypto_values = cache;
+    }
+
+    return ctx->crypto_values;
+}
+
+
+static void
+ngx_stream_var_crypto_hash(ngx_stream_var_crypto_value_t *value)
+{
+    uint32_t    hash;
+    ngx_uint_t  i;
+
+    ngx_crc32_init(hash);
+    ngx_crc32_update(&hash, (u_char *) &value->rule, sizeof(value->rule));
+    ngx_crc32_update(&hash, (u_char *) &value->nargs, sizeof(value->nargs));
+
+    for (i = 0; i < value->nargs; i++) {
+        ngx_crc32_update(&hash, (u_char *) &value->args[i].len,
+                         sizeof(value->args[i].len));
+        if (value->args[i].len) {
+            ngx_crc32_update(&hash, value->args[i].data, value->args[i].len);
+        }
+    }
+
+    ngx_crc32_final(hash);
+    value->node.key = hash;
+}
+
+
+static ngx_int_t
+ngx_stream_var_crypto_store(ngx_pool_t *pool,
+    ngx_stream_var_crypto_ctx_t *cache, ngx_stream_var_crypto_value_t *value)
+{
+    u_char                         *p;
+    size_t                          total;
+    ngx_uint_t                      i;
+    ngx_stream_var_crypto_value_t  *entry;
+
+    total = sizeof(ngx_stream_var_crypto_value_t);
+
+    for (i = 0; i < value->nargs; i++) {
+        if (value->args[i].len > NGX_MAX_SIZE_T_VALUE - total) {
+            return NGX_ERROR;
+        }
+
+        total += value->args[i].len;
+    }
+
+    entry = ngx_palloc(pool, total);
+    if (entry == NULL) {
+        return NGX_ERROR;
+    }
+
+    entry->node.key = value->node.key;
+    entry->rule = value->rule;
+    entry->nargs = value->nargs;
+    entry->value = value->value;
+    p = (u_char *) (entry + 1);
+
+    for (i = 0; i < value->nargs; i++) {
+        entry->args[i].len = value->args[i].len;
+        entry->args[i].data = p;
+        if (value->args[i].len) {
+            p = ngx_cpymem(p, value->args[i].data, value->args[i].len);
+        }
+    }
+
+    ngx_rbtree_insert(&cache->tree, &entry->node);
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_stream_var_cipher_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
+{
+    char                            *err;
+    int                              n, last;
+    u_char                          *p, *iv, *output;
+    size_t                           len, prefix, size;
+    ngx_int_t                        rc;
+    ngx_uint_t                       i, encrypt;
+    ngx_str_t                        data, key, aad;
+    EVP_CIPHER_CTX                  *cipher_ctx;
+    const EVP_CIPHER                *cipher;
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+    EVP_CIPHER                      *fetched;
+#endif
+    ngx_stream_var_crypto_ctx_t     *cache;
+    ngx_stream_complex_value_t      *args;
+    ngx_stream_var_crypto_value_t   *entry;
+    ngx_stream_var_cipher_options_t  options;
+    ngx_stream_var_crypto_value_t    value;
+    u_char                           nonce[EVP_MAX_IV_LENGTH];
+
+    args = rule->args->elts;
+    value.rule = rule;
+    value.nargs = NGX_STREAM_VAR_CIPHER_ARGS;
+
+    for (i = 0; i < NGX_STREAM_VAR_CIPHER_ARGS; i++) {
+        if (ngx_stream_complex_value(s, &args[i], &value.args[i]) != NGX_OK) {
+            return NGX_ERROR;
+        }
+    }
+
+    if (ngx_stream_var_cipher_options(value.args, rule->u.cipher_flags,
+                                      (1 << NGX_STREAM_VAR_CIPHER_ARGS) - 1,
+                                      rule->func->type, &options, &err)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    encrypt = options.encrypt;
+    cache = NULL;
+
+    if (encrypt) {
+        cache = ngx_stream_var_crypto_get_cache(s);
+        if (cache == NULL) {
+            return NGX_ERROR;
+        }
+
+        ngx_stream_var_crypto_hash(&value);
+        entry = ngx_stream_var_crypto_lookup(cache, &value);
+        if (entry != NULL) {
+            v->data = entry->value.data;
+            v->len = entry->value.len;
+            return NGX_OK;
+        }
+    }
+
+    data = value.args[NGX_STREAM_VAR_CIPHER_DATA];
+    key = value.args[NGX_STREAM_VAR_CIPHER_KEY];
+    aad = value.args[NGX_STREAM_VAR_CIPHER_AAD];
+
+    if (data.len > INT_MAX - EVP_MAX_BLOCK_LENGTH
+        || aad.len > INT_MAX)
+    {
+        return NGX_ERROR;
+    }
+
+    prefix = options.packed ? options.cipher->iv_len : 0;
+    iv = NULL;
+
+    if (!encrypt) {
+        if (data.len < prefix + options.cipher->tag_len) {
+            return NGX_ERROR;
+        }
+
+        if (prefix) {
+            iv = data.data;
+            data.data += prefix;
+            data.len -= prefix;
+        }
+
+        data.len -= options.cipher->tag_len;
+    }
+
+    if (iv == NULL && options.cipher->iv_len) {
+        if (rule->u.cipher_flags & (1 << NGX_STREAM_VAR_CIPHER_IV)) {
+            iv = value.args[NGX_STREAM_VAR_CIPHER_IV].data;
+
+        } else {
+            if (!encrypt || RAND_bytes(nonce, options.cipher->iv_len) != 1) {
+                ERR_clear_error();
+                return NGX_ERROR;
+            }
+
+            iv = nonce;
+        }
+    }
+
+    size = data.len + EVP_MAX_BLOCK_LENGTH;
+    if (encrypt) {
+        size += prefix + options.cipher->tag_len;
+    }
+
+    output = ngx_pnalloc(s->connection->pool, size);
+    if (output == NULL) {
+        return NGX_ERROR;
+    }
+
+    ERR_clear_error();
+
+    cipher_ctx = EVP_CIPHER_CTX_new();
+    if (cipher_ctx == NULL) {
+        ERR_clear_error();
+        return NGX_ERROR;
+    }
+
+    rc = NGX_ERROR;
+
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+    fetched = EVP_CIPHER_fetch(NULL, (char *) options.cipher->name.data, NULL);
+    cipher = fetched;
+#else
+    cipher = EVP_get_cipherbyname((char *) options.cipher->name.data);
+#endif
+
+    if (cipher == NULL
+        || EVP_CipherInit_ex(cipher_ctx, cipher, NULL, NULL, NULL, encrypt)
+           != 1
+        || EVP_CIPHER_CTX_set_padding(cipher_ctx, options.padding) != 1)
+    {
+        goto done;
+    }
+
+    if (options.cipher->tag_len
+        && EVP_CIPHER_CTX_ctrl(cipher_ctx, EVP_CTRL_AEAD_SET_IVLEN,
+                               options.cipher->iv_len, NULL) != 1)
+    {
+        goto done;
+    }
+
+    if (EVP_CipherInit_ex(cipher_ctx, NULL, NULL, key.data, iv, encrypt) != 1) {
+        goto done;
+    }
+
+    if (options.cipher->tag_len) {
+        if (!encrypt
+            && EVP_CIPHER_CTX_ctrl(cipher_ctx, EVP_CTRL_AEAD_SET_TAG,
+                                   options.cipher->tag_len,
+                                   data.data + data.len) != 1)
+        {
+            goto done;
+        }
+
+        if (aad.len
+            && EVP_CipherUpdate(cipher_ctx, NULL, &n, aad.data, aad.len) != 1)
+        {
+            goto done;
+        }
+    }
+
+    p = output;
+    if (encrypt && prefix) {
+        p = ngx_cpymem(p, iv, prefix);
+    }
+
+    if (EVP_CipherUpdate(cipher_ctx, p, &n,
+                         data.len ? data.data : (u_char *) "", data.len) != 1
+        || EVP_CipherFinal_ex(cipher_ctx, p + n, &last) != 1)
+    {
+        goto done;
+    }
+
+    len = n + last;
+
+    if (encrypt && options.cipher->tag_len) {
+        if (EVP_CIPHER_CTX_ctrl(cipher_ctx, EVP_CTRL_AEAD_GET_TAG,
+                                options.cipher->tag_len, p + len) != 1)
+        {
+            goto done;
+        }
+
+        len += options.cipher->tag_len;
+    }
+
+    if (encrypt) {
+        len += prefix;
+        value.value.data = output;
+        value.value.len = len;
+
+        if (ngx_stream_var_crypto_store(s->connection->pool, cache, &value)
+            != NGX_OK)
+        {
+            goto done;
+        }
+    }
+
+    v->data = output;
+    v->len = len;
+    rc = NGX_OK;
+
+done:
+
+    EVP_CIPHER_CTX_free(cipher_ctx);
+
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+    EVP_CIPHER_free(fetched);
+#endif
+
+    ERR_clear_error();
+
+    if (rc != NGX_OK) {
+        OPENSSL_cleanse(output, size);
+    }
+
+    return rc;
+}
+
+static const EVP_MD *
+ngx_stream_var_rsa_digest(ngx_str_t *name)
+{
+    if (ngx_stream_var_crypto_equal(name, "sha256") == NGX_OK) {
+        return EVP_sha256();
+    }
+
+    if (ngx_stream_var_crypto_equal(name, "sha384") == NGX_OK) {
+        return EVP_sha384();
+    }
+
+    if (ngx_stream_var_crypto_equal(name, "sha512") == NGX_OK) {
+        return EVP_sha512();
+    }
+
+    if (ngx_stream_var_crypto_equal(name, "sha1") == NGX_OK) {
+        return EVP_sha1();
+    }
+
+    return NULL;
+}
+
+
+static ngx_int_t
+ngx_stream_var_rsa_options(ngx_str_t *values, ngx_uint_t flags,
+    ngx_uint_t known, ngx_stream_var_func_e type,
+    ngx_stream_var_rsa_options_t *options, char **err)
+{
+    ngx_str_t  *value;
+    ngx_int_t   salt_length;
+
+    ngx_memzero(options, sizeof(ngx_stream_var_rsa_options_t));
+    options->signing = (type == NGX_STREAM_VAR_FUNC_RSA_SIGN
+                        || type == NGX_STREAM_VAR_FUNC_RSA_VERIFY);
+    options->private_key = (type == NGX_STREAM_VAR_FUNC_RSA_SIGN
+                            || type == NGX_STREAM_VAR_FUNC_RSA_DECRYPT);
+    options->cache = (type == NGX_STREAM_VAR_FUNC_RSA_SIGN
+                      || type == NGX_STREAM_VAR_FUNC_RSA_ENCRYPT);
+    options->verify = type == NGX_STREAM_VAR_FUNC_RSA_VERIFY;
+    *err = "invalid RSA parameters";
+
+    if (!options->private_key && (flags & (1 << NGX_STREAM_VAR_RSA_PASSWORD))) {
+        *err = "password is only supported by RSA private key operations";
+        return NGX_ERROR;
+    }
+
+    if (options->signing && (flags & (1 << NGX_STREAM_VAR_RSA_LABEL))) {
+        *err = "label is only supported by RSA OAEP operations";
+        return NGX_ERROR;
+    }
+
+    if (!options->signing && (flags & (1 << NGX_STREAM_VAR_RSA_SALT_LENGTH))) {
+        *err = "salt_length is only supported by RSA PSS operations";
+        return NGX_ERROR;
+    }
+
+    if (known & (1 << NGX_STREAM_VAR_RSA_PADDING)) {
+        value = &values[NGX_STREAM_VAR_RSA_PADDING];
+
+        if (!options->signing
+            && ngx_stream_var_crypto_equal(value, "oaep") == NGX_OK)
+        {
+            options->padding = RSA_PKCS1_OAEP_PADDING;
+
+        } else if (options->signing
+                   && ngx_stream_var_crypto_equal(value, "pss") == NGX_OK)
+        {
+            options->padding = RSA_PKCS1_PSS_PADDING;
+
+        } else if (options->signing
+                   && ngx_stream_var_crypto_equal(value, "pkcs1") == NGX_OK)
+        {
+            options->padding = RSA_PKCS1_PADDING;
+
+            if (flags & ((1 << NGX_STREAM_VAR_RSA_MGF1_HASH)
+                         | (1 << NGX_STREAM_VAR_RSA_SALT_LENGTH)))
+            {
+                *err = "mgf1_hash and salt_length cannot be used with pkcs1";
+                return NGX_ERROR;
+            }
+
+        } else {
+            *err = "invalid RSA padding";
+            return NGX_ERROR;
+        }
+    }
+
+    if (known & (1 << NGX_STREAM_VAR_RSA_HASH)) {
+        options->md = ngx_stream_var_rsa_digest(
+                          &values[NGX_STREAM_VAR_RSA_HASH]);
+        if (options->md == NULL) {
+            *err = "unsupported RSA hash";
+            return NGX_ERROR;
+        }
+    }
+
+    options->mgf1_md = options->md;
+
+    if ((flags & (1 << NGX_STREAM_VAR_RSA_MGF1_HASH))
+        && (known & (1 << NGX_STREAM_VAR_RSA_MGF1_HASH)))
+    {
+        options->mgf1_md = ngx_stream_var_rsa_digest(
+                              &values[NGX_STREAM_VAR_RSA_MGF1_HASH]);
+        if (options->mgf1_md == NULL) {
+            *err = "unsupported RSA MGF1 hash";
+            return NGX_ERROR;
+        }
+    }
+
+    if (options->signing && (known & (1 << NGX_STREAM_VAR_RSA_SALT_LENGTH))) {
+        value = &values[NGX_STREAM_VAR_RSA_SALT_LENGTH];
+
+        if (ngx_stream_var_crypto_equal(value, "digest") == NGX_OK) {
+            options->salt_length = RSA_PSS_SALTLEN_DIGEST;
+
+        } else if (options->verify
+                   && ngx_stream_var_crypto_equal(value, "auto") == NGX_OK)
+        {
+            options->salt_length = RSA_PSS_SALTLEN_AUTO;
+
+        } else {
+            salt_length = ngx_atoi(value->data, value->len);
+            if (salt_length == NGX_ERROR || salt_length > INT_MAX) {
+                *err = "invalid RSA PSS salt length";
+                return NGX_ERROR;
+            }
+
+            options->salt_length = (int) salt_length;
+        }
+    }
+
+    if ((known & (1 << NGX_STREAM_VAR_RSA_LABEL))
+        && values[NGX_STREAM_VAR_RSA_LABEL].len > INT_MAX)
+    {
+        *err = "RSA OAEP label is too long";
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+static int
+ngx_stream_var_rsa_password(char *buf, int size, int rwflag, void *data)
+{
+    ngx_str_t  *password = data;
+
+    if (size <= 0 || password->len > (size_t) size) {
+        return 0;
+    }
+
+    if (password->len) {
+        ngx_memcpy(buf, password->data, password->len);
+    }
+
+    return (int) password->len;
+}
+
+
+static EVP_PKEY *
+ngx_stream_var_rsa_load_key(ngx_pool_t *pool, ngx_str_t *prefix,
+    ngx_str_t *source, ngx_str_t *password, ngx_uint_t private_key)
+{
+    u_char          *p;
+    BIO             *bio;
+    EVP_PKEY        *key;
+    ngx_str_t        path;
+    ngx_file_info_t  fi;
+
+    if (source->len == 0 || source->len > INT_MAX
+        || ngx_strlchr(source->data, source->data + source->len, '\0'))
+    {
+        return NULL;
+    }
+
+    ERR_clear_error();
+
+    if (source->len >= 5 && ngx_strncmp(source->data, "data:", 5) == 0) {
+        bio = BIO_new_mem_buf(source->data + 5, (int) (source->len - 5));
+
+    } else {
+        path = *source;
+
+        if (ngx_get_full_name(pool, prefix, &path) != NGX_OK) {
+            return NULL;
+        }
+
+        p = ngx_pnalloc(pool, path.len + 1);
+        if (p == NULL) {
+            return NULL;
+        }
+
+        ngx_memcpy(p, path.data, path.len);
+        p[path.len] = '\0';
+
+        if (ngx_file_info(p, &fi) == NGX_FILE_ERROR || !ngx_is_file(&fi)) {
+            return NULL;
+        }
+
+        bio = BIO_new_file((char *) p, "r");
+    }
+
+    if (bio == NULL) {
+        ERR_clear_error();
+        return NULL;
+    }
+
+    if (private_key) {
+        key = PEM_read_bio_PrivateKey(bio, NULL, ngx_stream_var_rsa_password,
+                                     password);
+
+    } else {
+        key = PEM_read_bio_PUBKEY(bio, NULL, ngx_stream_var_rsa_password,
+                                 password);
+    }
+
+    BIO_free(bio);
+    ERR_clear_error();
+
+    if (key != NULL && EVP_PKEY_base_id(key) != EVP_PKEY_RSA) {
+        EVP_PKEY_free(key);
+        return NULL;
+    }
+
+    return key;
+}
+
+
+static void
+ngx_stream_var_rsa_free_key(void *data)
+{
+    EVP_PKEY_free(data);
+}
+
+
+static ngx_int_t
+ngx_stream_var_compile_rsa(ngx_conf_t *cf, ngx_stream_var_rule_t *rule,
+    ngx_str_t *value, ngx_uint_t nargs)
+{
+    char                         *err;
+    ngx_str_t                    *parameter;
+    ngx_uint_t                    i, j, first, known, flags, signing;
+    ngx_pool_cleanup_t           *cln;
+    ngx_stream_complex_value_t   *cv;
+    ngx_stream_var_rsa_conf_t    *conf;
+    ngx_stream_var_rsa_options_t  options;
+    ngx_str_t                     values[NGX_STREAM_VAR_RSA_ARGS];
+    ngx_str_t                     oaep_hash = ngx_string("oaep_hash=");
+
+    if (rule->ignore_case) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "var RSA functions do not support \"-i\"");
+        return NGX_ERROR;
+    }
+
+    signing = (rule->func->type == NGX_STREAM_VAR_FUNC_RSA_SIGN
+               || rule->func->type == NGX_STREAM_VAR_FUNC_RSA_VERIFY);
+    first = rule->func->type == NGX_STREAM_VAR_FUNC_RSA_VERIFY ? 3 : 2;
+
+    ngx_memzero(values, sizeof(values));
+    values[NGX_STREAM_VAR_RSA_DATA] = value[0];
+    values[NGX_STREAM_VAR_RSA_KEY] = value[1];
+
+    if (first == 3) {
+        values[NGX_STREAM_VAR_RSA_SIGNATURE] = value[2];
+    }
+
+    if (signing) {
+        ngx_str_set(&values[NGX_STREAM_VAR_RSA_PADDING], "pss");
+
+    } else {
+        ngx_str_set(&values[NGX_STREAM_VAR_RSA_PADDING], "oaep");
+    }
+
+    ngx_str_set(&values[NGX_STREAM_VAR_RSA_HASH], "sha256");
+    ngx_str_set(&values[NGX_STREAM_VAR_RSA_SALT_LENGTH], "digest");
+    flags = 0;
+
+    for (i = first; i < nargs; i++) {
+        for (j = NGX_STREAM_VAR_RSA_PADDING; j < NGX_STREAM_VAR_RSA_ARGS; j++) {
+            parameter = &ngx_stream_var_rsa_parameters[j];
+            if (j == NGX_STREAM_VAR_RSA_HASH && !signing) {
+                parameter = &oaep_hash;
+            }
+
+            if (value[i].len >= parameter->len
+                && ngx_strncmp(value[i].data, parameter->data,
+                               parameter->len) == 0)
+            {
+                break;
+            }
+        }
+
+        if (j == NGX_STREAM_VAR_RSA_ARGS) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "var: invalid RSA parameter");
+            return NGX_ERROR;
+        }
+
+        if (flags & (1 << j)) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "var: duplicate RSA parameter \"%V\"",
+                               parameter);
+            return NGX_ERROR;
+        }
+
+        flags |= 1 << j;
+        values[j].data = value[i].data + parameter->len;
+        values[j].len = value[i].len - parameter->len;
+    }
+
+    if (ngx_stream_var_compile_args(cf, rule, values, NGX_STREAM_VAR_RSA_ARGS)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    cv = rule->args->elts;
+    known = 0;
+
+    for (i = 0; i < NGX_STREAM_VAR_RSA_ARGS; i++) {
+        if (cv[i].lengths == NULL) {
+            known |= 1 << i;
+            values[i] = cv[i].value;
+        }
+    }
+
+    if (ngx_stream_var_rsa_options(values, flags, known, rule->func->type,
+                                   &options, &err) != NGX_OK)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "var: %s", err);
+        return NGX_ERROR;
+    }
+
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_stream_var_rsa_conf_t));
+    if (conf == NULL) {
+        return NGX_ERROR;
+    }
+
+    rule->u.rsa = conf;
+    conf->flags = flags;
+    conf->prefix = cf->cycle->conf_prefix;
+
+    if (cv[NGX_STREAM_VAR_RSA_KEY].lengths == NULL
+        && cv[NGX_STREAM_VAR_RSA_PASSWORD].lengths == NULL)
+    {
+        conf->key = ngx_stream_var_rsa_load_key(
+                        cf->pool, &conf->prefix,
+                        &values[NGX_STREAM_VAR_RSA_KEY],
+                        &values[NGX_STREAM_VAR_RSA_PASSWORD],
+                        options.private_key);
+        if (conf->key == NULL) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "var: invalid RSA key");
+            return NGX_ERROR;
+        }
+
+        cln = ngx_pool_cleanup_add(cf->pool, 0);
+        if (cln == NULL) {
+            EVP_PKEY_free(conf->key);
+            conf->key = NULL;
+            return NGX_ERROR;
+        }
+
+        cln->handler = ngx_stream_var_rsa_free_key;
+        cln->data = conf->key;
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_stream_var_rsa_handler(ngx_stream_session_t *s,
+    ngx_stream_variable_value_t *v, ngx_stream_var_rule_t *rule)
+{
+    char                           *err;
+    int                             key_size, hash_size, der_size;
+    u_char                         *output, *der, *label;
+    size_t                          size, len;
+    ngx_int_t                       rc;
+    ngx_uint_t                      i, verify, temporary;
+    ngx_str_t                      *data, *signature;
+    EVP_PKEY                       *key;
+    EVP_PKEY_CTX                   *pctx;
+    EVP_MD_CTX                     *mdctx;
+    ngx_stream_complex_value_t     *args;
+    ngx_stream_var_rsa_conf_t      *conf;
+    ngx_stream_var_crypto_ctx_t    *cache;
+    ngx_stream_var_crypto_value_t  *entry;
+    ngx_stream_var_crypto_value_t   value;
+    ngx_stream_var_rsa_options_t    options;
+
+    verify = rule->func->type == NGX_STREAM_VAR_FUNC_RSA_VERIFY;
+    if (verify) {
+        v->data = (u_char *) "0";
+        v->len = 1;
+    }
+
+    key = NULL;
+    pctx = NULL;
+    mdctx = NULL;
+    output = NULL;
+    der = NULL;
+    label = NULL;
+    cache = NULL;
+    size = 0;
+    temporary = 0;
+    rc = NGX_ERROR;
+    conf = rule->u.rsa;
+    args = rule->args->elts;
+    value.rule = rule;
+    value.nargs = NGX_STREAM_VAR_RSA_ARGS + 1;
+
+    for (i = 0; i < NGX_STREAM_VAR_RSA_ARGS; i++) {
+        if (ngx_stream_complex_value(s, &args[i], &value.args[i]) != NGX_OK) {
+            goto done;
+        }
+    }
+
+    if (ngx_stream_var_rsa_options(value.args, conf->flags,
+                                   (1 << NGX_STREAM_VAR_RSA_ARGS) - 1,
+                                   rule->func->type, &options, &err) != NGX_OK)
+    {
+        goto done;
+    }
+
+    key = conf->key;
+    if (key == NULL) {
+        temporary = 1;
+        key = ngx_stream_var_rsa_load_key(s->connection->pool, &conf->prefix,
+                                          &value.args[NGX_STREAM_VAR_RSA_KEY],
+                                       &value.args[NGX_STREAM_VAR_RSA_PASSWORD],
+                                          options.private_key);
+        if (key == NULL) {
+            goto done;
+        }
+    }
+
+    ERR_clear_error();
+
+    if (options.cache) {
+        der_size = i2d_PUBKEY(key, &der);
+        if (der_size <= 0) {
+            goto done;
+        }
+
+        value.args[NGX_STREAM_VAR_RSA_ARGS].data = der;
+        value.args[NGX_STREAM_VAR_RSA_ARGS].len = der_size;
+        cache = ngx_stream_var_crypto_get_cache(s);
+        if (cache == NULL) {
+            goto done;
+        }
+
+        ngx_stream_var_crypto_hash(&value);
+        entry = ngx_stream_var_crypto_lookup(cache, &value);
+        if (entry != NULL) {
+            v->data = entry->value.data;
+            v->len = entry->value.len;
+            rc = NGX_OK;
+            goto done;
+        }
+    }
+
+    data = &value.args[NGX_STREAM_VAR_RSA_DATA];
+    signature = &value.args[NGX_STREAM_VAR_RSA_SIGNATURE];
+    key_size = EVP_PKEY_size(key);
+    hash_size = EVP_MD_size(options.md);
+    if (key_size <= 0 || hash_size <= 0) {
+        goto done;
+    }
+
+    if (options.signing) {
+        mdctx = EVP_MD_CTX_new();
+        if (mdctx == NULL) {
+            goto done;
+        }
+
+        if (verify) {
+            if (signature->len != (size_t) key_size
+                || EVP_DigestVerifyInit(mdctx, &pctx, options.md, NULL, key)
+                   != 1)
+            {
+                goto done;
+            }
+
+        } else if (EVP_DigestSignInit(mdctx, &pctx, options.md, NULL, key)
+                   != 1)
+        {
+            goto done;
+        }
+
+        if (EVP_PKEY_CTX_set_rsa_padding(pctx, options.padding) <= 0) {
+            goto done;
+        }
+
+        if (options.padding == RSA_PKCS1_PSS_PADDING
+            && (EVP_PKEY_CTX_set_rsa_mgf1_md(pctx, options.mgf1_md) <= 0
+                || EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, options.salt_length)
+                   <= 0))
+        {
+            goto done;
+        }
+
+        if (verify) {
+            if (EVP_DigestVerify(mdctx, signature->data, signature->len,
+                                 data->len ? data->data : (u_char *) "",
+                                 data->len) == 1)
+            {
+                v->data = (u_char *) "1";
+            }
+
+            rc = NGX_OK;
+            goto done;
+        }
+
+    } else {
+        if (options.private_key) {
+            if (data->len != (size_t) key_size) {
+                goto done;
+            }
+
+        } else if (key_size < 2 * hash_size + 2
+                   || data->len > (size_t) (key_size - 2 * hash_size - 2))
+        {
+            goto done;
+        }
+
+        pctx = EVP_PKEY_CTX_new(key, NULL);
+        if (pctx == NULL) {
+            goto done;
+        }
+
+        if ((options.private_key ? EVP_PKEY_decrypt_init(pctx)
+                                 : EVP_PKEY_encrypt_init(pctx)) <= 0
+            || EVP_PKEY_CTX_set_rsa_padding(pctx, options.padding) <= 0
+            || EVP_PKEY_CTX_set_rsa_oaep_md(pctx, options.md) <= 0
+            || EVP_PKEY_CTX_set_rsa_mgf1_md(pctx, options.mgf1_md) <= 0)
+        {
+            goto done;
+        }
+
+        len = value.args[NGX_STREAM_VAR_RSA_LABEL].len;
+        if (len) {
+            label = OPENSSL_malloc(len);
+            if (label == NULL) {
+                goto done;
+            }
+
+            ngx_memcpy(label, value.args[NGX_STREAM_VAR_RSA_LABEL].data, len);
+
+            if (EVP_PKEY_CTX_set0_rsa_oaep_label(pctx, label, (int) len) <= 0) {
+                goto done;
+            }
+
+            label = NULL;
+        }
+    }
+
+    size = key_size;
+    len = size;
+    output = ngx_pnalloc(s->connection->pool, size);
+    if (output == NULL) {
+        goto done;
+    }
+
+    if (options.signing) {
+        if (EVP_DigestSign(mdctx, output, &len,
+                           data->len ? data->data : (u_char *) "", data->len)
+            != 1)
+        {
+            goto done;
+        }
+
+    } else if (options.private_key) {
+        if (EVP_PKEY_decrypt(pctx, output, &len, data->data, data->len) <= 0) {
+            goto done;
+        }
+
+    } else if (EVP_PKEY_encrypt(pctx, output, &len,
+                                data->len ? data->data : (u_char *) "",
+                                data->len) <= 0)
+    {
+        goto done;
+    }
+
+    if (options.cache) {
+        value.value.data = output;
+        value.value.len = len;
+
+        if (ngx_stream_var_crypto_store(s->connection->pool, cache, &value)
+            != NGX_OK)
+        {
+            goto done;
+        }
+    }
+
+    v->data = output;
+    v->len = len;
+    rc = NGX_OK;
+
+done:
+
+    if (mdctx) {
+        EVP_MD_CTX_free(mdctx);
+
+    } else {
+        EVP_PKEY_CTX_free(pctx);
+    }
+
+    if (temporary) {
+        EVP_PKEY_free(key);
+    }
+
+    OPENSSL_free(der);
+    OPENSSL_free(label);
+    ERR_clear_error();
+
+    if (rc != NGX_OK && output != NULL) {
+        OPENSSL_cleanse(output, size);
+    }
+
+    return verify ? NGX_OK : rc;
+}
+
+#endif
